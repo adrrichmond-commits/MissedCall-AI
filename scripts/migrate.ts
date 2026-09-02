@@ -10,7 +10,7 @@
  * USE_LOCAL_POSTGRES=1 (see scripts/db.ts).
  */
 import { join } from "node:path";
-import { getSql, query, runSqlFile } from "./db";
+import { query, runSqlFile } from "./db";
 
 type Applied = { name: string; applied_at: string };
 
@@ -27,7 +27,7 @@ async function ensureMigrationsTable(): Promise<void> {
 
 async function listMigrationFiles(): Promise<string[]> {
   const dir = join(import.meta.dir, "..", "migrations");
-  const entries = Array.from(new Bun.Glob("*.sql").scanSync({ cwd: dir }));
+  const entries = Array.from(new Bun.Glob("*.sql").scanSync({ cwd: dir })) as string[];
   return entries.sort();
 }
 
