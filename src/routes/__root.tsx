@@ -8,7 +8,12 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "My site" },
+      { title: "MissedCall AI | Turn Missed Calls Into Booked Plumbing Jobs" },
+      {
+        name: "description",
+        content:
+          "MissedCall AI helps plumbing companies turn missed phone calls into booked jobs. When you can't answer, it follows up with the customer, qualifies the opportunity, and helps schedule the work.",
+      },
     ],
     links: [{ rel: "stylesheet", href: appCss }],
   }),
@@ -30,7 +35,7 @@ function RootDocument({ children }: { children: ReactNode }) {
       <head>
         <HeadContent />
       </head>
-      <body>
+      <body className="font-sans">
         {children}
         <Scripts />
       </body>
