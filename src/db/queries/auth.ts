@@ -160,14 +160,38 @@ export async function touchLastLogin(userId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface SessionWithUser extends Session {
-  user_data: User;
+  userData: User;
 }
 
 export async function getSessionByTokenHash(tokenHash: string): Promise<SessionWithUser | null> {
   assertServer();
   const db = sql();
+  // s.*/to_jsonb(u.*) would serialize with Postgres's snake_case column names,
+  // but every consumer reads the typed camelCase shape (session.userId,
+  // user.businessId, user.isActive, ...). Explicit aliases keep the wire shape
+  // identical to the TS interfaces — user_data is built with jsonb_build_object
+  // for the same reason.
   const rows = await db`
-    SELECT s.*, to_jsonb(u.*) AS user_data
+    SELECT
+      s.id,
+      s.user_id AS "userId",
+      s.token_hash AS "tokenHash",
+      s.expires_at AS "expiresAt",
+      s.created_at AS "createdAt",
+      s.updated_at AS "updatedAt",
+      jsonb_build_object(
+        'id', u.id,
+        'businessId', u.business_id,
+        'email', u.email,
+        'fullName', u.full_name,
+        'role', u.role,
+        'passwordHash', u.password_hash,
+        'isActive', u.is_active,
+        'emailVerified', u.email_verified,
+        'lastLoginAt', u.last_login_at,
+        'createdAt', u.created_at,
+        'updatedAt', u.updated_at
+      ) AS "userData"
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ${tokenHash} AND s.expires_at > now()
@@ -259,4 +283,91 @@ export async function markEmailVerified(tokenHash: string): Promise<void> {
   assertServer();
   const db = sql();
   await db`UPDATE email_verification_tokens SET verified_at = now() WHERE token_hash = ${tokenHash}`;
+}
+
+// ---------------------------------------------------------------------------
+// Signup / password change primitives (atomic, single-statement writes)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a business + its owner user atomically in ONE statement.
+ *
+ * A data-modifying CTE makes the two INSERTs a single implicit transaction:
+ * either both rows exist or neither does. (The Neon driver's `transaction()`
+ * only accepts non-interactive arrays, so an atomic CTE is the correct
+ * primitive here — same guarantee, one round trip.)
+ */
+export async function createBusinessWithOwner(input: {
+  businessName: string;
+  ownerEmail: string;
+  ownerFullName: string;
+  passwordHash: string;
+}): Promise<{ business: Business; user: User }> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    WITH biz AS (
+      INSERT INTO businesses (name)
+      VALUES (${input.businessName})
+      RETURNING *
+    ), usr AS (
+      INSERT INTO users (business_id, email, full_name, role, password_hash)
+      SELECT biz.id, ${input.ownerEmail}, ${input.ownerFullName}, 'owner', ${input.passwordHash}
+      FROM biz
+      RETURNING *
+    )
+    SELECT to_jsonb(biz.*) AS business, to_jsonb(usr.*) AS user
+    FROM biz, usr`;
+  const row = rows[0] as unknown as { business: Business; user: User };
+  return { business: row.business, user: row.user };
+}
+
+/** Mark a user's email verified (token flow callback). Cross-business by design: the token hash IS the authority. */
+export async function setUserEmailVerified(userId: string): Promise<void> {
+  assertServer();
+  const db = sql();
+  await db`UPDATE users SET email_verified = true WHERE id = ${userId}`;
+}
+
+/** Set a new password hash; returns the user so callers can invalidate sessions. */
+export async function updateUserPasswordHash(
+  userId: string,
+  passwordHash: string,
+): Promise<void> {
+  assertServer();
+  const db = sql();
+  await db`UPDATE users SET password_hash = ${passwordHash} WHERE id = ${userId}`;
+}
+
+/** Delete all sessions for a user (password changed / account compromised). */
+export async function deleteSessionsForUser(userId: string): Promise<void> {
+  assertServer();
+  const db = sql();
+  await db`DELETE FROM sessions WHERE user_id = ${userId}`;
+}
+
+/** Invalidate any outstanding password-reset tokens for a user. */
+export async function invalidatePasswordResetTokens(userId: string): Promise<void> {
+  assertServer();
+  const db = sql();
+  await db`
+    UPDATE password_reset_tokens SET used_at = now()
+    WHERE user_id = ${userId} AND used_at IS NULL`;
+}
+
+/** Invalidate any outstanding (unverified) email-verification tokens for a user. */
+export async function invalidateEmailVerificationTokens(userId: string): Promise<void> {
+  assertServer();
+  const db = sql();
+  await db`
+    UPDATE email_verification_tokens SET verified_at = now()
+    WHERE user_id = ${userId} AND verified_at IS NULL`;
+}
+
+/** Check whether an email is already registered (case-insensitive; login identity is lowercased). */
+export async function emailExists(email: string): Promise<boolean> {
+  assertServer();
+  const db = sql();
+  const rows = await db`SELECT 1 FROM users WHERE lower(email) = ${email.toLowerCase()} LIMIT 1`;
+  return rows.length > 0;
 }

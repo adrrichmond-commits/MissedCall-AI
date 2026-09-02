@@ -10,8 +10,8 @@
  * Creates:
  *   - 1 demo plumbing business + business hours + service areas
  *   - 3 users (owner / manager / employee) sharing the demo password
- *     `demo-password-1234` (argon2id-hashed via Bun.password — placeholder
- *     credentials for the auth phase, never a real login)
+ *     `demo-password-1234` (hashed via src/lib/server/password.ts using
+ *     runtime-agnostic node:crypto scrypt, so logins work under Node and Bun)
  *   - the global service_defaults catalog + the business's services
  *     (8 instantiated from defaults, 3 custom)
  *   - 25 leads across every lead_status/source, with realistic plumbing jobs
@@ -23,6 +23,7 @@
  * (see scripts/db.ts).
  */
 import { query } from "./db";
+import { hashPassword } from "../src/lib/server/password";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -410,13 +411,14 @@ async function main(): Promise<void> {
   )) as unknown as Inserted[];
   const businessId = biz.id;
 
-  // --- users (argon2id hashes of the shared demo password) -------------------
-  const passwordHash = await Bun.password.hash("demo-password-1234", { algorithm: "argon2id" });
+  // --- users (scrypt$ hashes of the shared demo password, verifiable under
+  //     any runtime) ----------------------------------------------------------
+  const passwordHash = await hashPassword("demo-password-1234");
   for (const u of USERS) {
     await query(
-      `INSERT INTO users (business_id, email, full_name, role, password_hash, last_login_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [businessId, u.email, u.fullName, u.role, passwordHash,
+      `INSERT INTO users (business_id, email, full_name, role, password_hash, email_verified, last_login_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [businessId, u.email, u.fullName, u.role, passwordHash, true,
         u.role === "owner" ? at(0, -24) : null],
     );
   }
