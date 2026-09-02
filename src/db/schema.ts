@@ -58,6 +58,8 @@ export interface Business {
   postalCode: string | null;
   /** IANA timezone used to render hours/appointments. */
   timezone: string;
+  /** Per-business configuration blob (notification prefs, etc). */
+  settings: Record<string, unknown>;
   plan: BusinessPlan;
   createdAt: Date;
   updatedAt: Date;
