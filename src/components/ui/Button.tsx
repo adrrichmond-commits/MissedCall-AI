@@ -57,14 +57,10 @@ export function Button(props: AnchorButtonProps | ButtonButtonProps) {
     );
   }
 
+  const { type, disabled, children } = props as ButtonButtonProps;
   return (
-    <button
-      className={cls}
-      onClick={props.onClick}
-      type={props.type ?? "button"}
-      disabled={props.disabled}
-    >
-      {props.children}
+    <button className={cls} onClick={props.onClick} type={type ?? "button"} disabled={disabled}>
+      {children}
     </button>
   );
 }
