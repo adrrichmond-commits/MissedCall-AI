@@ -17,6 +17,7 @@ import {
   issueSession,
   newSessionToken,
 } from "~/lib/server/auth.server";
+import { hashPassword, verifyPassword } from "~/lib/server/password";
 
 // ---------------------------------------------------------------------------
 // Validation helpers (server-side, never trust client input)
@@ -76,7 +77,7 @@ export const signupFn = createServerFn({ method: "POST" })
       return { ok: false, error: "An account with this email already exists." };
     }
 
-    const passwordHash = await Bun.password.hash(password, { algorithm: "argon2id" });
+    const passwordHash = await hashPassword(password);
     const { user } = await q.createBusinessWithOwner({
       businessName,
       ownerEmail: email,
@@ -114,8 +115,8 @@ export const loginFn = createServerFn({ method: "POST" })
     const hash = user?.passwordHash ?? "";
     // Constant-shape verification: even for unknown emails we burn a hash check.
     const valid = hash
-      ? await Bun.password.verify(password, hash)
-      : await Bun.password.verify(password, await Bun.password.hash("timing-equalizer", { algorithm: "argon2id" }));
+      ? await verifyPassword(password, hash)
+      : await verifyPassword(password, await hashPassword("timing-equalizer"));
     if (!user || !valid) {
       return { ok: false, code: "invalid", error: "Invalid email or password." };
     }
@@ -169,7 +170,7 @@ export const resetPasswordFn = createServerFn({ method: "POST" })
     if (!record) {
       return { ok: false, error: "This reset link is invalid or has expired. Request a new one." };
     }
-    const passwordHash = await Bun.password.hash(password, { algorithm: "argon2id" });
+    const passwordHash = await hashPassword(password);
     await q.updateUserPasswordHash(record.userId, passwordHash);
     await q.markPasswordResetTokenUsed(tokenHash); // single-use
     await q.invalidatePasswordResetTokens(record.userId); // burn any other outstanding links
