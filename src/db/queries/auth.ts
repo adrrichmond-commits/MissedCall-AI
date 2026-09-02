@@ -160,7 +160,7 @@ export async function touchLastLogin(userId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface SessionWithUser extends Session {
-  user_data: User;
+  userData: User;
 }
 
 export async function getSessionByTokenHash(tokenHash: string): Promise<SessionWithUser | null> {
@@ -191,7 +191,7 @@ export async function getSessionByTokenHash(tokenHash: string): Promise<SessionW
         'lastLoginAt', u.last_login_at,
         'createdAt', u.created_at,
         'updatedAt', u.updated_at
-      ) AS user_data
+      ) AS "userData"
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ${tokenHash} AND s.expires_at > now()

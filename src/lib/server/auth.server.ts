@@ -88,7 +88,7 @@ export async function getSessionFromRequest(): Promise<AuthContext | null> {
   const tokenHash = await hashToken(raw);
   const found = await getSessionByTokenHash(tokenHash);
   if (!found) return null;
-  const user = found.user_data;
+  const user = found.userData;
   if (!user.isActive) return null;
   const business = await getBusiness(user.businessId);
   if (!business) return null;
