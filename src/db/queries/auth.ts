@@ -166,8 +166,32 @@ export interface SessionWithUser extends Session {
 export async function getSessionByTokenHash(tokenHash: string): Promise<SessionWithUser | null> {
   assertServer();
   const db = sql();
+  // s.*/to_jsonb(u.*) would serialize with Postgres's snake_case column names,
+  // but every consumer reads the typed camelCase shape (session.userId,
+  // user.businessId, user.isActive, ...). Explicit aliases keep the wire shape
+  // identical to the TS interfaces — user_data is built with jsonb_build_object
+  // for the same reason.
   const rows = await db`
-    SELECT s.*, to_jsonb(u.*) AS user_data
+    SELECT
+      s.id,
+      s.user_id AS "userId",
+      s.token_hash AS "tokenHash",
+      s.expires_at AS "expiresAt",
+      s.created_at AS "createdAt",
+      s.updated_at AS "updatedAt",
+      jsonb_build_object(
+        'id', u.id,
+        'businessId', u.business_id,
+        'email', u.email,
+        'fullName', u.full_name,
+        'role', u.role,
+        'passwordHash', u.password_hash,
+        'isActive', u.is_active,
+        'emailVerified', u.email_verified,
+        'lastLoginAt', u.last_login_at,
+        'createdAt', u.created_at,
+        'updatedAt', u.updated_at
+      ) AS user_data
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ${tokenHash} AND s.expires_at > now()
