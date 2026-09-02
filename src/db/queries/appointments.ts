@@ -135,6 +135,52 @@ export async function countUpcoming(businessId: string): Promise<number> {
   return Number((rows[0] as unknown as { n: unknown }).n);
 }
 
+/**
+ * Appointment counts by weekday of scheduled_at, all-time.
+ * Returns 7 numbers indexed Mon=0 … Sun=6 (Postgres ISODOW - 1).
+ */
+export async function countAppointmentsByWeekday(businessId: string): Promise<number[]> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT Extract(ISODOW FROM scheduled_at)::int AS isodow, count(*) AS n
+    FROM appointments WHERE business_id = ${businessId}
+    GROUP BY 1 ORDER BY 1`;
+  const out = [0, 0, 0, 0, 0, 0, 0];
+  for (const row of rows as unknown as { isodow: number; n: unknown }[]) {
+    out[row.isodow - 1] = Number(row.n);
+  }
+  return out;
+}
+
+export interface AppointmentWithLead extends Appointment {
+  /** Customer info from the parent lead (null when the lead was deleted). */
+  leadName: string | null;
+  leadPhone: string | null;
+}
+
+/** Appointments joined with their lead's contact info (both rows business-bounded). */
+export async function listAppointmentsWithLead(
+  businessId: string,
+  filters: AppointmentFilters = {},
+  opts?: ListOptions,
+): Promise<AppointmentWithLead[]> {
+  assertServer();
+  const { limit, offset, order } = listClause(opts);
+  const dir = order === "asc" ? "ASC" : "DESC"; // whitelisted
+  const w = appointmentWhere(businessId, filters);
+  const db = sql();
+  const rows = await db.query(
+    `SELECT a.*, l.contact_name AS lead_name, l.contact_phone AS lead_phone
+     FROM appointments a
+     LEFT JOIN leads l ON l.id = a.lead_id AND l.business_id = $1
+     WHERE ${w.text}
+     ORDER BY a.scheduled_at ${dir} LIMIT ${limit} OFFSET ${offset}`,
+    w.values,
+  );
+  return rows as unknown as AppointmentWithLead[];
+}
+
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------

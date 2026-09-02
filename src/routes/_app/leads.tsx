@@ -1,15 +1,10 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { PagePlaceholder } from "~/components/app/AppShell";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
 
+/**
+ * Layout route for /leads: renders nothing itself. The list lives in
+ * leads.index.tsx and the detail page in leads/$leadId.tsx — both render
+ * through the Outlet below.
+ */
 export const Route = createFileRoute("/_app/leads")({
-  component: LeadsPage,
+  component: () => <Outlet />,
 });
-
-function LeadsPage() {
-  return (
-    <PagePlaceholder
-      title="Leads"
-      description="Every missed call becomes a lead here — contact, service need, urgency, and status."
-    />
-  );
-}
