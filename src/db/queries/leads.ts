@@ -128,6 +128,29 @@ export async function countLeadsByStatus(businessId: string): Promise<Record<Lea
   return out;
 }
 
+export async function countLeadsBySource(businessId: string): Promise<Record<LeadSource, number>> {
+  assertServer();
+  const db = sql();
+  const rows = await db`SELECT source, count(*) AS n FROM leads WHERE business_id = ${businessId} GROUP BY source`;
+  const out: Record<LeadSource, number> = {
+    missed_call: 0, web_form: 0, referral: 0, repeat_customer: 0, other: 0,
+  };
+  for (const row of rows as unknown as { source: LeadSource; n: unknown }[]) {
+    out[row.source] = Number(row.n);
+  }
+  return out;
+}
+
+/** Leads created at/after `since` (e.g. the dashboard's "new this week"). */
+export async function countLeadsCreatedSince(businessId: string, since: Date): Promise<number> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT count(*) AS n FROM leads
+    WHERE business_id = ${businessId} AND created_at >= ${since.toISOString()}`;
+  return Number((rows[0] as unknown as { n: unknown }).n);
+}
+
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------

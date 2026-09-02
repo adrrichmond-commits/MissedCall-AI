@@ -4,7 +4,7 @@
  * ISOLATION RULE: every function takes `businessId` and filters on it. Message
  * reads join through conversations so a foreign conversation id cannot leak rows.
  */
-import type { Conversation, ConversationStatus, Message, MessageStatus } from "../schema";
+import type { Conversation, ConversationStatus, Message, MessageDirection, MessageStatus } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
 export interface ConversationFilters {
@@ -95,6 +95,109 @@ export async function countConversationsByStatus(businessId: string): Promise<Re
     out[row.status] = Number(row.n);
   }
   return out;
+}
+
+/** Every conversation linked to one lead (lead detail page). */
+export async function listConversationsByLead(businessId: string, leadId: string): Promise<Conversation[]> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT * FROM conversations
+    WHERE business_id = ${businessId} AND lead_id = ${leadId}
+    ORDER BY updated_at DESC`;
+  return rows as unknown as Conversation[];
+}
+
+/** Which of the given lead ids (this business only) have a conversation. */
+export async function leadIdsWithConversations(businessId: string, leadIds: string[]): Promise<Set<string>> {
+  assertServer();
+  if (leadIds.length === 0) return new Set();
+  const db = sql();
+  const placeholders = leadIds.map((_, i) => `$${i + 2}`).join(", ");
+  const rows = await db.query(
+    `SELECT DISTINCT lead_id FROM conversations WHERE business_id = $1 AND lead_id IN (${placeholders})`,
+    [businessId, ...leadIds],
+  );
+  return new Set((rows as unknown as { lead_id: string }[]).map((r) => r.lead_id));
+}
+
+export interface ConversationSummaryRow {
+  id: string;
+  status: ConversationStatus;
+  summary: string | null;
+  messageCount: number;
+  lastMessageAt: Date | null;
+}
+
+/** Per-conversation stats for one lead's detail page (single query, no N+1). */
+export async function conversationSummariesForLead(
+  businessId: string,
+  leadId: string,
+): Promise<ConversationSummaryRow[]> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT c.id, c.status, c.summary,
+           (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+           (SELECT max(m.created_at) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at
+    FROM conversations c
+    WHERE c.business_id = ${businessId} AND c.lead_id = ${leadId}
+    ORDER BY c.updated_at DESC`;
+  return (rows as unknown as {
+    id: string; status: ConversationStatus; summary: string | null;
+    message_count: unknown; last_message_at: Date | null;
+  }[]).map((r) => ({
+    id: r.id,
+    status: r.status,
+    summary: r.summary,
+    messageCount: Number(r.message_count),
+    lastMessageAt: r.last_message_at,
+  }));
+}
+
+export interface ConversationListItem extends Conversation {
+  leadName: string | null;
+  serviceNeed: string | null;
+  lastMessageBody: string | null;
+  lastMessageDirection: MessageDirection | null;
+  /** ISO string — the caller (server fn) converts before returning to the client. */
+  lastMessageAtRaw: Date | string | null;
+  messageCount: number;
+}
+
+/**
+ * Inbox list rows: conversation + parent lead context + last message preview +
+ * message count, in one query. Isolation: `c.business_id = $1` and the lead
+ * join is also business-bounded so a foreign lead_id cannot leak names.
+ */
+export async function listConversationsWithPreview(
+  businessId: string,
+  filters: ConversationFilters = {},
+  opts?: ListOptions,
+): Promise<ConversationListItem[]> {
+  assertServer();
+  const { limit, offset, order } = listClause(opts);
+  const dir = order === "asc" ? "ASC" : "DESC"; // whitelisted
+  const w = conversationWhere(businessId, filters);
+  const db = sql();
+  const rows = await db.query(
+    `SELECT c.*,
+       l.contact_name AS lead_name, l.service_need AS service_need,
+       lm.body AS last_message_body, lm.direction AS last_message_direction,
+       lm.created_at AS last_message_at_raw,
+       (SELECT count(*) FROM messages mc WHERE mc.conversation_id = c.id) AS message_count
+     FROM conversations c
+     LEFT JOIN leads l ON l.id = c.lead_id AND l.business_id = $1
+     LEFT JOIN LATERAL (
+       SELECT m.body, m.direction, m.created_at
+       FROM messages m WHERE m.conversation_id = c.id
+       ORDER BY m.created_at DESC LIMIT 1
+     ) lm ON true
+     WHERE ${w.text}
+     ORDER BY c.updated_at ${dir} LIMIT ${limit} OFFSET ${offset}`,
+    w.values,
+  );
+  return rows as unknown as ConversationListItem[];
 }
 
 // ---------------------------------------------------------------------------
