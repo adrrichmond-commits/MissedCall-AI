@@ -72,6 +72,11 @@ export interface User {
   /** Hashed server-side; never select into client payloads. */
   passwordHash: string;
   isActive: boolean;
+  /**
+   * Flipped by the email-verification token flow (migration 002). Unverified
+   * users may log in; the app shows a "verify your email" banner instead.
+   */
+  emailVerified: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

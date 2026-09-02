@@ -414,9 +414,9 @@ async function main(): Promise<void> {
   const passwordHash = await Bun.password.hash("demo-password-1234", { algorithm: "argon2id" });
   for (const u of USERS) {
     await query(
-      `INSERT INTO users (business_id, email, full_name, role, password_hash, last_login_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [businessId, u.email, u.fullName, u.role, passwordHash,
+      `INSERT INTO users (business_id, email, full_name, role, password_hash, email_verified, last_login_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [businessId, u.email, u.fullName, u.role, passwordHash, true,
         u.role === "owner" ? at(0, -24) : null],
     );
   }

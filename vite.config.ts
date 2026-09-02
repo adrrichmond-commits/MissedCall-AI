@@ -3,6 +3,14 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import tsConfigPaths from "vite-tsconfig-paths";
+import { installLocalPostgresShim } from "./scripts/local-pg-shim";
+
+// Dev-only: when USE_LOCAL_POSTGRES=1 (never set in production), route the
+// Neon driver through a local-`pg` shim so the app can run against a local
+// Postgres for end-to-end auth testing. See scripts/local-pg-shim.ts.
+if (process.env.USE_LOCAL_POSTGRES === "1") {
+  void installLocalPostgresShim();
+}
 
 export default defineConfig({
   server: {
