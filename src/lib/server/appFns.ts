@@ -319,6 +319,7 @@ export interface InboxThreadData {
     customerPhone: string;
     leadName: string | null;
     serviceNeed: string | null;
+    leadId: string | null;
   };
   messages: {
     id: string;
@@ -350,6 +351,7 @@ export const getConversationThreadFn = createServerFn({ method: "GET" })
             customerPhone: conv.customerPhone,
             leadName: lead?.contactName ?? null,
             serviceNeed: lead?.serviceNeed ?? null,
+            leadId: conv.leadId,
           },
           messages: messages.map((m) => ({
             id: m.id,
