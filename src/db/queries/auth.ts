@@ -371,3 +371,17 @@ export async function emailExists(email: string): Promise<boolean> {
   const rows = await db`SELECT 1 FROM users WHERE lower(email) = ${email.toLowerCase()} LIMIT 1`;
   return rows.length > 0;
 }
+
+/**
+ * Merge-style update of the per-business settings jsonb blob (notification
+ * prefs etc). The caller passes the full merged object; we only persist it.
+ */
+export async function updateBusinessSettings(
+  businessId: string,
+  settings: Record<string, unknown>,
+): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db`UPDATE businesses SET settings = ${JSON.stringify(settings)}::jsonb WHERE id = ${businessId} RETURNING *`;
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
