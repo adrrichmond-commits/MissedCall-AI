@@ -16,8 +16,25 @@ import { neonConfig } from "@neondatabase/serverless";
 
 type Rows = Record<string, unknown>[];
 
+/**
+ * Make node-pg return the RAW WIRE FORMAT the Neon HTTP API delivers (every
+ * column value as text, null as null). By default node-pg parses values into
+ * JS objects — e.g. jsonb → object, arrays → Array — and the Neon driver then
+ * re-parses each value by column type (JSON.parse for jsonb, pg-types parsers
+ * for the rest), which crashes on objects with
+ * `SyntaxError: JSON Parse error: Unexpected identifier "object"`.
+ * Identity parsers skip node-pg's parsing so the Neon driver's parsers see
+ * exactly the text they are designed for.
+ */
+function useWireFormatParsers(pg: typeof import("pg")): void {
+  for (const oid of Object.values(pg.types.builtins)) {
+    if (typeof oid === "number") pg.types.setTypeParser(oid, (v) => v);
+  }
+}
+
 export async function installLocalPostgresShim(): Promise<void> {
   const pg = await import("pg");
+  useWireFormatParsers(pg);
   neonConfig.fetchEndpoint = () => "http://localhost/local-sql-proxy";
   neonConfig.fetchFunction = async (
     _url: string,
