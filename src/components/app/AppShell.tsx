@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CurrentUserView } from "~/lib/server/sessionFns";
 import { Badge } from "~/components/ui/Badge";
 
@@ -30,7 +30,13 @@ function isActivePath(href: string, pathname: string): boolean {
  */
 export function AppShell({ user, children }: { user: CurrentUserView; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
-  const pathname = window.location.pathname;
+  // SSR-safe: `window` doesn't exist during server render. Read the pathname
+  // after mount — the shell renders with no active nav item on the server and
+  // corrects itself on hydration.
+  const [pathname, setPathname] = useState("");
+  useEffect(() => {
+    setPathname(window.location.pathname);
+  }, []);
   const roleTone = user.role === "owner" ? "brand" : user.role === "manager" ? "aqua" : "slate";
 
   async function logout() {
