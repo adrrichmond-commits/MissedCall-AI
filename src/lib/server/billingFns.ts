@@ -11,13 +11,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireRole } from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
 import * as q from "~/db/queries";
-import type { BusinessPlan } from "~/db/schema";
 import { BILLING_PHASE_NOTE, PLANS, TRIAL_DAYS, getPlan, type PlanConfig } from "~/lib/pricing";
 
 export type BillingResult<T> = { ok: true; data: T } | { ok: false; status: 400 | 401 | 403 | 404; error: string };
 
 /** Wire-safe plan snapshot (PLANS as a plain array for the client). */
-export type PlanView = Pick<PlanConfig, "id" | "name" | "priceCents" | "tagline" | "features">;
+export type PlanView = Pick<PlanConfig, "id" | "name" | "priceCents" | "tagline" | "features" | "checkoutUrl">;
 
 export interface BillingOverview {
   /** Currently selected plan id ("trial" until a tier is chosen). */
@@ -74,7 +73,14 @@ export const getBillingOverviewFn = createServerFn({ method: "GET" }).handler(
           canEdit: ctx.role === "owner",
           trialDaysRemaining: trial.remaining,
           trialExpired: trial.expired,
-          plans: PLANS.map(({ id, name, priceCents, tagline, features }) => ({ id, name, priceCents, tagline, features })),
+          plans: PLANS.map(({ id, name, priceCents, tagline, features, checkoutUrl }) => ({
+            id,
+            name,
+            priceCents,
+            tagline,
+            features,
+            checkoutUrl,
+          })),
           trialDays: TRIAL_DAYS,
           phaseNote: BILLING_PHASE_NOTE,
         },
@@ -85,40 +91,9 @@ export const getBillingOverviewFn = createServerFn({ method: "GET" }).handler(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Write: plan change — Phase 1 placeholder. Records the plan on the account;
-// replaced by real Stripe checkout in Phase 2. Owner-only.
-// ---------------------------------------------------------------------------
-export const changePlanFn = createServerFn({ method: "POST" })
-  .validator((d: unknown) => d as { planId?: unknown })
-  .handler(async ({ data }): Promise<BillingResult<{ message: string; plan: string }>> => {
-    try {
-      const ctx = await requireRole("owner");
-      const businessId = ctx.business.id;
-      const planId = typeof data?.planId === "string" ? data.planId.trim() : "";
-      const plan = getPlan(planId);
-      if (!plan) {
-        return { ok: false, status: 400, error: "Unknown plan. Choose Starter or Pro." };
-      }
-      const business = await q.getBusiness(businessId);
-      if (!business) return { ok: false, status: 404, error: "Business not found." };
-      if (business.plan === plan.id) {
-        return { ok: true, data: { message: `You are already on ${plan.name}.`, plan: business.plan } };
-      }
-      // Phase 2 will replace this with a Stripe Checkout session; for now the
-      // plan choice is simply recorded on the account.
-      const updated = await q.updateBusinessPlan(businessId, plan.id as BusinessPlan);
-      if (!updated) return { ok: false, status: 404, error: "Business not found." };
-      // Re-activating on a plan clears a past cancellation (fresh start).
-      if (updated.subscriptionStatus === "canceled") {
-        await q.clearSubscriptionStatus(businessId);
-      }
-      return { ok: true, data: { message: `Plan recorded: ${plan.name}. ${BILLING_PHASE_NOTE}`, plan: updated.plan } };
-    } catch (e) {
-      return authErrorToResult(e);
-    }
-  });
-
+// NOTE: there is intentionally no in-app plan-change writer. There is no
+// Stripe API key in this app (platform-managed account), so plan activation
+// happens after payment on Stripe's hosted checkout — not from a button here.
 // ---------------------------------------------------------------------------
 // Write: cancel — sets subscription_status='canceled' and KEEPS plan data
 // (data preservation is a product requirement). Owner-only. In Phase 2 this

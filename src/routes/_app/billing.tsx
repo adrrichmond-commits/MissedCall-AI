@@ -1,11 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import {
-  cancelSubscriptionFn,
-  changePlanFn,
-  getBillingOverviewFn,
-  type BillingOverview,
-} from "~/lib/server/billingFns";
+import { cancelSubscriptionFn, getBillingOverviewFn, type BillingOverview } from "~/lib/server/billingFns";
 import { formatPlanPrice } from "~/lib/pricing";
 import { PageHeader, PageLoading, ErrorState } from "~/components/app/pageStates";
 import { Badge } from "~/components/ui/Badge";
@@ -33,16 +28,16 @@ function PlanCard({
   plan,
   currentPlanId,
   canEdit,
-  busy,
-  onSwitch,
 }: {
   plan: BillingOverview["plans"][number];
   currentPlanId: string;
   canEdit: boolean;
-  busy: boolean;
-  onSwitch: (planId: string) => void;
 }) {
   const isCurrent = plan.id === currentPlanId;
+  const cta =
+    plan.id === "pro"
+      ? `Upgrade to Pro — $${plan.priceCents / 100}/mo`
+      : `Switch to Starter — $${plan.priceCents / 100}/mo`;
   return (
     <section
       className={`flex flex-col rounded-2xl border bg-white p-5 shadow-sm sm:p-6 ${
@@ -81,19 +76,34 @@ function PlanCard({
       </ul>
       <div className="mt-5">
         {canEdit ? (
-          <Button
-            variant={isCurrent ? "secondary" : "primary"}
-            disabled={isCurrent || busy}
-            onClick={() => onSwitch(plan.id)}
-            className="w-full"
-          >
-            {isCurrent ? "Current plan" : `Switch to ${plan.name}`}
-          </Button>
+          isCurrent ? (
+            <Button variant="secondary" disabled className="w-full">
+              Current plan
+            </Button>
+          ) : (
+            <a
+              href={plan.checkoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+            >
+              {cta}
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+                <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+              </svg>
+            </a>
+          )
         ) : (
           <Button variant="secondary" disabled className="w-full">
             Owner access required
           </Button>
         )}
+        {!isCurrent ? (
+          <p className="mt-2 text-center text-xs text-slate-400">
+            Opens Stripe checkout in a new tab.
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -112,20 +122,6 @@ function BillingPage() {
   const refresh = async () => {
     const res = await getBillingOverviewFn();
     if (res.ok) setView(res.data);
-  };
-
-  const switchPlan = async (planId: string) => {
-    setState({ kind: "busy" });
-    setStatusMessage(null);
-    const res = await changePlanFn({ data: { planId } });
-    if (res.ok) {
-      setStatusMessage(res.data.message);
-      await refresh();
-    } else {
-      setState({ kind: "error", message: res.error });
-      return;
-    }
-    setState({ kind: "idle" });
   };
 
   const cancel = async () => {
@@ -210,14 +206,7 @@ function BillingPage() {
       {/* Tier cards */}
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         {view.plans.map((plan) => (
-          <PlanCard
-            key={plan.id}
-            plan={plan}
-            currentPlanId={view.plan}
-            canEdit={canEdit}
-            busy={state.kind === "busy"}
-            onSwitch={switchPlan}
-          />
+          <PlanCard key={plan.id} plan={plan} currentPlanId={view.plan} canEdit={canEdit} />
         ))}
       </div>
 

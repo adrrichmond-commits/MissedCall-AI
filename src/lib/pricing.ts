@@ -15,6 +15,13 @@ export interface PlanConfig {
   priceCents: number;
   tagline: string;
   features: string[];
+  /**
+   * Stripe hosted checkout link (Phase 2). Payment Card is a platform-managed
+   * Stripe account — there is no API key in this app, so checkout happens on
+   * Stripe's hosted page and the prices below must match the Stripe prices.
+   * Only edit prices here AND in Stripe together.
+   */
+  checkoutUrl: string;
 }
 
 export const PLANS: readonly PlanConfig[] = [
@@ -31,6 +38,7 @@ export const PLANS: readonly PlanConfig[] = [
       "Dashboard",
       "SMS notifications",
     ],
+    checkoutUrl: "https://buy.stripe.com/14AdR92cmetM265fxt7Re07",
   },
   {
     id: "pro",
@@ -44,15 +52,16 @@ export const PLANS: readonly PlanConfig[] = [
       "Advanced follow-ups",
       "Advanced analytics",
     ],
+    checkoutUrl: "https://buy.stripe.com/3cI3cv8AKdpI7qp8517Re08",
   },
 ] as const;
 
 /** Free-trial length in days (owner-locked). */
 export const TRIAL_DAYS = 14;
 
-/** Phase 1 placeholder notice shown wherever money would change hands. */
+/** Honest checkout note shown wherever money changes hands. */
 export const BILLING_PHASE_NOTE =
-  "Billing checkout goes live in Phase 2 — for now plan changes are recorded in your account.";
+  "Checkout is handled securely on Stripe. Your plan is activated after payment confirmation.";
 
 /** "149" from 14900 — prices render from cents, never from literals. */
 export function formatPlanPrice(plan: PlanConfig): string {
