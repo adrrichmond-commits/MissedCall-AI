@@ -60,18 +60,45 @@ export const NOTIFICATION_PREF_KEYS = [
   "weeklySummaryEmail",
 ] as const satisfies readonly (keyof NotificationPrefs)[];
 
+/** Step 5 of the 9-step onboarding (owner brief section 12: emergency prefs). */
+export interface EmergencyPrefs {
+  /** Take emergency calls after hours (drives the receptionist's greeting). */
+  afterHoursEmergency: boolean;
+  /** Email the owner when a lead is classified an emergency. */
+  emergencyNotificationEmail: boolean;
+  /** Text the owner when a lead is classified an emergency. */
+  emergencyNotificationSms: boolean;
+  /** Free-text instructions the AI follows on emergency calls. */
+  emergencyInstructions: string;
+}
+
+export const DEFAULT_EMERGENCY_PREFS: EmergencyPrefs = {
+  afterHoursEmergency: true,
+  emergencyNotificationEmail: true,
+  emergencyNotificationSms: false,
+  emergencyInstructions: "",
+};
+
 export interface OnboardingStepStatus {
   id: number;
-  key: "company" | "services" | "hours" | "areas" | "notifications" | "review";
+  key:
+    | "company"
+    | "services"
+    | "hours"
+    | "emergency"
+    | "notifications"
+    | "phone"
+    | "testAi"
+    | "review";
   label: string;
   done: boolean;
 }
 
 export interface OnboardingState {
   steps: OnboardingStepStatus[];
-  /** 0–100 rounded progress across the 6 steps. */
+  /** 0–100 rounded progress across the 9 steps. */
   percent: number;
-  /** First unfinished step (1-based), or 6 when everything is done. */
+  /** Index of the first unfinished step (0-based), or 8 when everything is done. */
   resumeStep: number;
   /** True when the business is missing baseline config (no hours or no services). */
   needsOnboarding: boolean;
@@ -124,5 +151,8 @@ export interface SettingsView {
   serviceAreas: SettingsServiceAreaView[];
   serviceDefaults: { id: string; name: string; description: string | null }[];
   notificationPrefs: NotificationPrefs;
+  emergencyPrefs: EmergencyPrefs;
+  /** True once the owner saved emergency prefs at least once (emergencyPrefsSavedAt). */
+  emergencyPrefsSaved: boolean;
   onboarding: OnboardingState;
 }

@@ -17,8 +17,11 @@
  *   - 25 leads across the Phase 2 lifecycle (new/contacted/booked/completed/lost)
  *     with priority (emergency/high/normal) and realistic plumbing jobs
  *   - 14 SMS conversations with message threads matching each lead
- *   - 10 appointments (5 past completed/cancelled/no-show, 1 in progress,
- *     4 upcoming)
+ *   - 10 appointments under the Phase 2 REQUESTED/CONFIRMED lifecycle
+ *     (migration 006): 7 past (5 completed, 2 declined) and 3 upcoming
+ *     split 2 confirmed / 1 requested so the dashboard metric reads
+ *     "2 confirmed - 1 requested" and the Appointments page has both
+ *     actions to exercise
  *
  * Requires DATABASE_URL; for a local Postgres also set USE_LOCAL_POSTGRES=1
  * (see scripts/db.ts).
@@ -62,6 +65,9 @@ const BUSINESS = {
   postalCode: "78744",
   timezone: "America/Chicago",
   plan: "trial" as const,
+  // Phase 2 trial enforcement: the demo must always sit on an ACTIVE trial so
+  // the expired-trial read-only gate never shows in the demo account.
+  trialEndsInDays: 14,
 };
 
 const USERS = [
@@ -382,9 +388,11 @@ interface AppointmentFixture {
   /** Index into the business's service list (0-10 after seeding; resolved by name). */
   serviceName: string;
   technician: string;
-  status: "scheduled" | "confirmed" | "in_progress" | "completed" | "cancelled" | "no_show";
+  status: "requested" | "confirmed" | "declined" | "completed";
   dayOffset: number;
   hour: number;
+  /** When set, scheduled_at = now + this many minutes (overrides dayOffset/hour). */
+  startOffsetMinutes?: number;
   durationMinutes: number;
   notes: string | null;
 }
@@ -396,13 +404,13 @@ const APPOINTMENTS: AppointmentFixture[] = [
   { lead: 19, serviceName: "Fixture Repair & Replacement", technician: "Chris Pham", status: "completed", dayOffset: -27, hour: 13, durationMinutes: 75, notes: "Two faucets + toilet flapper; angle stops replaced." },
   { lead: 16, serviceName: "Sump Pump Installation", technician: "Dave Sorensen", status: "completed", dayOffset: -17, hour: 15, durationMinutes: 180, notes: "1/2 HP primary + battery backup installed and tested." },
   // past — cancelled / no-show
-  { lead: 9, serviceName: "Shower Valve Replacement", technician: "Chris Pham", status: "cancelled", dayOffset: -3, hour: 10, durationMinutes: 75, notes: "Customer rescheduling until after her kitchen remodel." },
-  { lead: 17, serviceName: "Leak Detection & Repair", technician: "Mike Ruiz", status: "no_show", dayOffset: -6, hour: 14, durationMinutes: 120, notes: "Customer not home; left card, office to re-book." },
+  { lead: 9, serviceName: "Shower Valve Replacement", technician: "Chris Pham", status: "declined", dayOffset: -3, hour: 10, durationMinutes: 75, notes: "Customer rescheduling until after her kitchen remodel." },
+  { lead: 17, serviceName: "Leak Detection & Repair", technician: "Mike Ruiz", status: "declined", dayOffset: -6, hour: 14, durationMinutes: 120, notes: "Customer not home; left card, office to re-book." },
   // present / upcoming
-  { lead: 14, serviceName: "Hydro Jetting", technician: "Tony Galdamez", status: "in_progress", dayOffset: 0, hour: Math.max(8, new Date().getHours()), durationMinutes: 120, notes: "Quarterly maintenance jetting — kitchen lines." },
+  { lead: 14, serviceName: "Hydro Jetting", technician: "Tony Galdamez", status: "completed", dayOffset: 0, hour: 0, startOffsetMinutes: -90, durationMinutes: 120, notes: "Quarterly maintenance jetting — kitchen lines." },
   { lead: 6, serviceName: "Leak Detection & Repair", technician: "Mike Ruiz", status: "confirmed", dayOffset: 1, hour: 10, durationMinutes: 120, notes: "Pressure test + PRV inspection." },
-  { lead: 10, serviceName: "Water Heater Replacement", technician: "Dave Sorensen", status: "scheduled", dayOffset: 3, hour: 9, durationMinutes: 240, notes: "Pending final heater choice — standard vs power-vent." },
-  { lead: 13, serviceName: "Water Heater Repair", technician: "Tony Galdamez", status: "scheduled", dayOffset: 8, hour: 13, durationMinutes: 150, notes: "Tankless conversion if quote approved; else bypass." },
+  { lead: 10, serviceName: "Water Heater Replacement", technician: "Dave Sorensen", status: "confirmed", dayOffset: 3, hour: 9, durationMinutes: 240, notes: "Pending final heater choice — standard vs power-vent." },
+  { lead: 13, serviceName: "Water Heater Repair", technician: "Tony Galdamez", status: "requested", dayOffset: 8, hour: 13, durationMinutes: 150, notes: "Tankless conversion if quote approved; else bypass." },
 ];
 
 // ---------------------------------------------------------------------------
@@ -432,10 +440,11 @@ async function main(): Promise<void> {
 
   // --- business --------------------------------------------------------------
   const [biz] = (await query(
-    `INSERT INTO businesses (name, phone, email, website, address_line1, city, state, postal_code, timezone, plan)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    `INSERT INTO businesses (name, phone, email, website, address_line1, city, state, postal_code, timezone, plan, trial_ends_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now() + make_interval(days => $11::int)) RETURNING id`,
     [BUSINESS.name, BUSINESS.phone, BUSINESS.email, BUSINESS.website, BUSINESS.addressLine1,
-      BUSINESS.city, BUSINESS.state, BUSINESS.postalCode, BUSINESS.timezone, BUSINESS.plan],
+      BUSINESS.city, BUSINESS.state, BUSINESS.postalCode, BUSINESS.timezone, BUSINESS.plan,
+      BUSINESS.trialEndsInDays],
   )) as unknown as Inserted[];
   const businessId = biz.id;
 
@@ -572,12 +581,16 @@ async function main(): Promise<void> {
   // --- appointments --------------------------------------------------------------
   for (const appt of APPOINTMENTS) {
     const lead = LEADS[appt.lead];
+    const scheduledAt =
+      appt.startOffsetMinutes !== undefined
+        ? new Date(Date.now() + appt.startOffsetMinutes * 60_000)
+        : at(appt.dayOffset, appt.hour);
     await query(
       `INSERT INTO appointments (business_id, lead_id, service_id, service_summary, technician_name,
          scheduled_at, duration_minutes, status, address, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [businessId, leadIds[appt.lead], serviceIdByName.get(appt.serviceName) ?? null, appt.serviceName,
-        appt.technician, at(appt.dayOffset, appt.hour), appt.durationMinutes, appt.status,
+        appt.technician, scheduledAt, appt.durationMinutes, appt.status,
         lead.contactAddress, appt.notes],
     );
   }

@@ -118,3 +118,25 @@ export async function requireRole(...allowed: UserRole[]): Promise<AuthContext> 
   }
   return ctx;
 }
+
+/**
+ * Trial enforcement (Phase 2): every business-modifying server fn must call
+ * this instead of plain requireRole. A business whose 14-day trial has ended
+ * (trial_ends_at in the past) goes read-only: writes throw a clear
+ * "trial expired" AuthError while reads, billing, and settings views keep
+ * working. Paying accounts (plan starter/pro) are never gated — once a plan
+ * is active the recorded trial window is moot.
+ */
+export async function requireActiveWrite(...allowed: UserRole[]): Promise<AuthContext> {
+  const ctx = await requireRole(...allowed);
+  const plan = ctx.business.plan;
+  if (plan === "starter" || plan === "pro") return ctx;
+  const trialEndsAt = ctx.business.trialEndsAt;
+  if (trialEndsAt != null && trialEndsAt.getTime() <= Date.now()) {
+    throw new AuthError(
+      "forbidden",
+      "Your free trial has expired, so your account is read-only. Upgrade to a plan on the Billing page to keep making changes - your data is safe and waiting.",
+    );
+  }
+  return ctx;
+}

@@ -145,12 +145,12 @@ const STATUS_META: Record<string, { tone: "brand" | "aqua" | "slate" | "amber" |
   awaiting_customer: { tone: "amber", label: "Awaiting customer" },
   booked: { tone: "brand", label: "Booked" },
   closed: { tone: "slate", label: "Closed" },
-  scheduled: { tone: "brand", label: "Scheduled" },
+  // Appointment lifecycle (migration 006): AI/customer bookings are requests
+  // the business confirms.
+  requested: { tone: "amber", label: "Requested" },
   confirmed: { tone: "green", label: "Confirmed" },
-  in_progress: { tone: "amber", label: "In progress" },
+  declined: { tone: "red", label: "Declined" },
   completed: { tone: "slate", label: "Completed" },
-  cancelled: { tone: "red", label: "Cancelled" },
-  no_show: { tone: "red", label: "No-show" },
 };
 
 export function StatusBadge({ status }: { status: string }) {
