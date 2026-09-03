@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   addServiceAreaFn,
   getOnboardingNudgeFn,
@@ -118,6 +118,19 @@ function OnboardingPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [skip, setSkip] = useState<SaveState>({ kind: "idle" });
+  // Resume: jump to the first incomplete step once the nudge data arrives.
+  // resumeStep is a 1-based step id (1-6); -1/6 means everything is done.
+  useEffect(() => {
+    let alive = true;
+    getOnboardingNudgeFn()
+      .then((n) => {
+        if (alive && n && n.resumeStep >= 2 && n.resumeStep <= 5) setStep(n.resumeStep);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const percent = Math.round(((step - 1) / TOTAL_STEPS) * 100);
 
