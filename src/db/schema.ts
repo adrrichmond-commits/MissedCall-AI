@@ -25,7 +25,17 @@ export type BusinessPlan = 'trial' | 'starter' | 'growth' | 'pro';
 
 export type LeadSource = 'missed_call' | 'web_form' | 'referral' | 'repeat_customer' | 'other';
 export type LeadUrgency = 'emergency' | 'same_day' | 'within_week' | 'flexible';
-export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'converted' | 'lost';
+/**
+ * Phase 2 lifecycle for leads (migration 005 — text + CHECK, not a PG enum,
+ * so the set stays editable). Replaces the Phase 1
+ * new/contacted/qualified/converted/lost lifecycle.
+ */
+export type LeadStatus = 'new' | 'contacted' | 'booked' | 'completed' | 'lost';
+/**
+ * Shop-side triage ranking (migration 005) — how the business prioritizes the
+ * job. Distinct from `LeadUrgency`, which is what the caller reported.
+ */
+export type LeadPriority = 'emergency' | 'high' | 'normal';
 
 export type ConversationStatus = 'active' | 'awaiting_customer' | 'booked' | 'closed';
 export type MessageDirection = 'inbound' | 'outbound';
@@ -128,6 +138,8 @@ export interface Lead {
   businessId: string;
   source: LeadSource;
   status: LeadStatus;
+  /** Triage ranking; drives the 🔴/🟠/🟢 badges (migration 005). */
+  priority: LeadPriority;
   serviceNeed: string;
   urgency: LeadUrgency;
   contactName: string;

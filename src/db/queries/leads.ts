@@ -4,13 +4,14 @@
  * ISOLATION RULE: every function takes `businessId` and filters on it —
  * the WHERE clause is the isolation boundary, so no function may omit it.
  */
-import type { Lead, LeadSource, LeadStatus, LeadUrgency } from "../schema";
+import type { Lead, LeadPriority, LeadSource, LeadStatus, LeadUrgency } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
 export interface LeadFilters {
   status?: LeadStatus;
   source?: LeadSource;
   urgency?: LeadUrgency;
+  priority?: LeadPriority;
   /** Matches contact name / phone / service need. */
   search?: string;
 }
@@ -42,9 +43,10 @@ export interface UpdateLeadInput {
   notes?: string | null;
 }
 
-const FILTERABLE_STATUS: LeadStatus[] = ["new", "contacted", "qualified", "converted", "lost"];
+const FILTERABLE_STATUS: LeadStatus[] = ["new", "contacted", "booked", "completed", "lost"];
 const FILTERABLE_SOURCE: LeadSource[] = ["missed_call", "web_form", "referral", "repeat_customer", "other"];
 const FILTERABLE_URGENCY: LeadUrgency[] = ["emergency", "same_day", "within_week", "flexible"];
+const FILTERABLE_PRIORITY: LeadPriority[] = ["emergency", "high", "normal"];
 
 /** Build the shared WHERE for list/count. All enum filters are whitelisted. */
 function leadWhere(businessId: string, f: LeadFilters): { text: string; values: unknown[] } {
@@ -61,6 +63,10 @@ function leadWhere(businessId: string, f: LeadFilters): { text: string; values: 
   if (f.urgency && FILTERABLE_URGENCY.includes(f.urgency)) {
     values.push(f.urgency);
     clauses.push(`urgency = $${values.length}`);
+  }
+  if (f.priority && FILTERABLE_PRIORITY.includes(f.priority)) {
+    values.push(f.priority);
+    clauses.push(`priority = $${values.length}`);
   }
   if (f.search && f.search.trim()) {
     const like = `%${f.search.trim()}%`;
@@ -121,7 +127,7 @@ export async function countLeadsByStatus(businessId: string): Promise<Record<Lea
   assertServer();
   const db = sql();
   const rows = await db`SELECT status, count(*) AS n FROM leads WHERE business_id = ${businessId} GROUP BY status`;
-  const out: Record<LeadStatus, number> = { new: 0, contacted: 0, qualified: 0, converted: 0, lost: 0 };
+  const out: Record<LeadStatus, number> = { new: 0, contacted: 0, booked: 0, completed: 0, lost: 0 };
   for (const row of rows as unknown as { status: LeadStatus; n: unknown }[]) {
     out[row.status] = Number(row.n);
   }
@@ -135,8 +141,8 @@ export async function countLeadsBySource(businessId: string): Promise<Record<Lea
   const out: Record<LeadSource, number> = {
     missed_call: 0, web_form: 0, referral: 0, repeat_customer: 0, other: 0,
   };
-  for (const row of rows as unknown as { source: LeadSource; n: unknown }[]) {
-    out[row.source] = Number(row.n);
+  for (const row of rows as unknown as { status: LeadSource; n: unknown }[]) {
+    out[row.status] = Number(row.n);
   }
   return out;
 }
@@ -149,6 +155,54 @@ export async function countLeadsCreatedSince(businessId: string, since: Date): P
     SELECT count(*) AS n FROM leads
     WHERE business_id = ${businessId} AND created_at >= ${since.toISOString()}`;
   return Number((rows[0] as unknown as { n: unknown }).n);
+}
+
+export async function countLeadsByPriority(
+  businessId: string,
+): Promise<Record<LeadPriority, number>> {
+  assertServer();
+  const db = sql();
+  const rows = await db`SELECT priority, count(*) AS n FROM leads WHERE business_id = ${businessId} GROUP BY priority`;
+  const out: Record<LeadPriority, number> = { emergency: 0, high: 0, normal: 0 };
+  for (const row of rows as unknown as { priority: LeadPriority; n: unknown }[]) {
+    out[row.priority] = Number(row.n);
+  }
+  return out;
+}
+
+/**
+ * Missed-call recovery funnel, all real rows:
+ *   missedCalls = leads created from a captured missed call;
+ *   recovered   = of those, leads with at least one SMS conversation
+ *                 (the text-back actually engaged the customer);
+ *   booked      = of those, leads the shop won (status booked/completed).
+ */
+export async function missedCallRecoveryStats(
+  businessId: string,
+): Promise<{ missedCalls: number; recovered: number; booked: number }> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT
+      count(*) AS missed_calls,
+      count(c.id) AS recovered,
+      count(*) FILTER (WHERE l.status IN ('booked', 'completed')) AS booked
+    FROM leads l
+    LEFT JOIN (
+      SELECT DISTINCT lead_id FROM conversations
+      WHERE lead_id IS NOT NULL AND business_id = ${businessId}
+    ) c ON c.lead_id = l.id
+    WHERE l.business_id = ${businessId} AND l.source = 'missed_call'`;
+  const r = rows[0] as unknown as {
+    missed_calls: unknown;
+    recovered: unknown;
+    booked: unknown;
+  };
+  return {
+    missedCalls: Number(r.missed_calls),
+    recovered: Number(r.recovered),
+    booked: Number(r.booked),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,21 +260,35 @@ export async function updateLead(
   );
   if (cols.length === 0) return getLead(businessId, leadId);
   // $1 = leadId, $2 = businessId, then one param per patched column.
-  const sets = cols.map((k, i) => `${snake(k)} = $${i + 3}`).join(", ");
+  const sets = cols.map((k, i) => snake(k) + " = $" + String(i + 3)).join(", ");
   const values = cols.map((k) => input[k as keyof UpdateLeadInput]);
+  // Keep converted_at in sync with lifecycle transitions: winning the job
+  // (booked/completed) stamps it once; moving to an open/lost state clears it.
+  let convertedClause = "";
+  if (cols.includes("status")) {
+    convertedClause =
+      input.status === "booked" || input.status === "completed"
+        ? ", converted_at = coalesce(converted_at, now())"
+        : ", converted_at = NULL";
+  }
   const db = sql();
   const rows = await db.query(
-    `UPDATE leads SET ${sets} WHERE id = $1 AND business_id = $2 RETURNING *`,
+    "UPDATE leads SET " + sets + convertedClause + " WHERE id = $1 AND business_id = $2 RETURNING *",
     [leadId, businessId, ...values],
   );
   return (rows[0] as unknown as Lead | undefined) ?? null;
 }
 
+/**
+ * "Booked" = the shop won the job: an appointment is (or will be) on the
+ * books. Phase 2 lifecycle replaces status='converted'; converted_at marks
+ * when the lead was won.
+ */
 export async function markLeadConverted(businessId: string, leadId: string): Promise<Lead | null> {
   assertServer();
   const db = sql();
   const rows = await db`
-    UPDATE leads SET status = 'converted', converted_at = now()
+    UPDATE leads SET status = 'booked', converted_at = now()
     WHERE id = ${leadId} AND business_id = ${businessId}
     RETURNING *`;
   return (rows[0] as unknown as Lead | undefined) ?? null;
