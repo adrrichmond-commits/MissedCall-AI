@@ -203,6 +203,11 @@ function Hero() {
 
         <div id="demo" className="scroll-mt-24">
           <DashboardMockup />
+          <div className="mt-6 flex justify-center">
+            <Button variant="primary" size="lg" href="/demo">
+              Open the interactive demo
+            </Button>
+          </div>
         </div>
       </div>
     </section>
