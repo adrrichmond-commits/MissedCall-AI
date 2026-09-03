@@ -161,3 +161,11 @@ export function StatusBadge({ status }: { status: string }) {
     </Badge>
   );
 }
+
+/** 🔴 Emergency / 🟠 High / 🟢 Normal — triage priority from migration 005. */
+export function PriorityBadge({ priority }: { priority: string }) {
+  if (priority === "emergency") return <Badge tone="red">🔴 Emergency</Badge>;
+  if (priority === "high") return <Badge tone="amber">🟠 High</Badge>;
+  if (priority === "normal") return <Badge tone="green">🟢 Normal</Badge>;
+  return <Badge tone="slate">{priority}</Badge>;
+}
