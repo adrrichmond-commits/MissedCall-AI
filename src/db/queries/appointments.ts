@@ -47,27 +47,35 @@ const FILTERABLE_STATUS: AppointmentStatus[] = [
   "no_show",
 ];
 
+/**
+ * Build the WHERE clause for appointment reads. Every column is qualified with
+ * `alias` -- `listAppointmentsWithLead` joins `leads`, which also has
+ * `business_id`, and an unqualified `business_id` makes Postgres fail with
+ * "column reference is ambiguous".
+ */
 function appointmentWhere(
   businessId: string,
   f: AppointmentFilters,
+  alias: "a" | "appointments" = "appointments",
 ): { text: string; values: unknown[] } {
+  const col = (name: string): string => `${alias}.${name}`;
   const values: unknown[] = [businessId];
-  const clauses = ["business_id = $1"];
+  const clauses = [`${col("business_id")} = $1`];
   if (f.status && FILTERABLE_STATUS.includes(f.status)) {
     values.push(f.status);
-    clauses.push(`status = $${values.length}`);
+    clauses.push(`${col("status")} = ${"$"}${values.length}`);
   }
   if (f.from) {
     values.push(f.from.toISOString());
-    clauses.push(`scheduled_at >= $${values.length}`);
+    clauses.push(`${col("scheduled_at")} >= ${"$"}${values.length}`);
   }
   if (f.to) {
     values.push(f.to.toISOString());
-    clauses.push(`scheduled_at < $${values.length}`);
+    clauses.push(`${col("scheduled_at")} < ${"$"}${values.length}`);
   }
   if (f.technician) {
     values.push(f.technician);
-    clauses.push(`technician_name = $${values.length}`);
+    clauses.push(`${col("technician_name")} = ${"$"}${values.length}`);
   }
   return { text: clauses.join(" AND "), values };
 }
@@ -168,7 +176,7 @@ export async function listAppointmentsWithLead(
   assertServer();
   const { limit, offset, order } = listClause(opts);
   const dir = order === "asc" ? "ASC" : "DESC"; // whitelisted
-  const w = appointmentWhere(businessId, filters);
+  const w = appointmentWhere(businessId, filters, "a");
   const db = sql();
   const rows = await db.query(
     `SELECT a.*, l.contact_name AS lead_name, l.contact_phone AS lead_phone

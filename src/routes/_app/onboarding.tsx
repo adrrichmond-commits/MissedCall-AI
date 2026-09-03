@@ -830,9 +830,30 @@ function formatHoursSummary(hours: SettingsView["hours"]): string {
     : segs.join(", ") + " (varies by day — see Settings)";
 }
 
-function ReviewStep({ view, onBack }: { view: SettingsView; onBack: () => void }) {
+function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack: () => void }) {
   const navigate = useNavigate();
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  // The route loader ran once at wizard mount — before steps 1-5 saved anything
+  // — so `initialView` can be stale. Re-fetch the persisted values when the
+  // Review step mounts so the summary shows what is actually in the database.
+  const [view, setView] = useState(initialView);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getSettingsFn()
+      .then((res) => {
+        if (!alive) return;
+        if (res.ok) setView(res.data);
+        // Even on failure, fall back to the loader data instead of spinning.
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (alive) setLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const onFinish = async () => {
     setSave({ kind: "saving" });
@@ -893,22 +914,28 @@ function ReviewStep({ view, onBack }: { view: SettingsView; onBack: () => void }
       <p className="mt-1 text-sm text-slate-600">
         A quick look at what you've set up. Everything stays editable in Settings.
       </p>
-      <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
-        {summary.map(([label, val]) => (
-          <div key={label} className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
-            <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
-            <dd className="text-sm text-slate-900">{val}</dd>
-          </div>
-        ))}
-      </dl>
+      {!loaded ? (
+        <p className="mt-4 text-sm text-slate-500" role="status">
+          Loading your saved setup…
+        </p>
+      ) : (
+        <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
+          {summary.map(([label, val]) => (
+            <div key={label} className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
+              <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
+              <dd className="text-sm text-slate-900">{val}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
       <div className="mt-5 flex items-center justify-between gap-3">
         <SaveFeedback state={save} />
         <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving"}>
+          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving" || !loaded}>
             Back
           </Button>
-          <Button onClick={onFinish} disabled={save.kind === "saving"}>
-            {save.kind === "saving" ? "Checking…" : "Finish — go to dashboard"}
+          <Button onClick={onFinish} disabled={save.kind === "saving" || !loaded}>
+            {!loaded ? "Loading…" : save.kind === "saving" ? "Checking…" : "Finish — go to dashboard"}
           </Button>
         </div>
       </div>
