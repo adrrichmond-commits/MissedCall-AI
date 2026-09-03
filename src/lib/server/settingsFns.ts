@@ -482,14 +482,30 @@ export const deleteServiceFn = createServerFn({ method: "POST" })
  * Seed the catalog from service_defaults when the business has no services
  * yet (used by the onboarding "start from the standard plumbing list" action).
  */
-export const seedServicesFromDefaultsFn = createServerFn({ method: "POST" }).handler(
-  async (): Promise<SettingsResult<{ message: string; added: number }>> => {
-    try {
-      const ctx = await requireRole("owner", "manager");
-      const businessId = ctx.business.id;
-      const existing = await q.listServices(businessId);
-      const defaults = await q.listServiceDefaults();
-      const have = new Set(existing.map((s) => s.name.toLowerCase()));
+export interface SeedServicesInput {
+  /** When provided, seed only these service-default ids; omit to seed all defaults. */
+  defaultIds?: string[];
+}
+export const seedServicesFromDefaultsFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as SeedServicesInput | undefined)
+  .handler(
+    async ({ data }): Promise<SettingsResult<{ message: string; added: number }>> => {
+      try {
+        const ctx = await requireRole("owner", "manager");
+        const businessId = ctx.business.id;
+        const existing = await q.listServices(businessId);
+        let defaults = await q.listServiceDefaults();
+        const wanted = (data?.defaultIds ?? [])
+          .map((id) => String(id).trim())
+          .filter((id) => id.length > 0);
+        if (wanted.length > 0) {
+          const known = new Set(defaults.map((d) => d.id));
+          if (wanted.some((id) => !known.has(id))) {
+            throw new ValidationError("Unknown service default in selection.", "defaultIds");
+          }
+          defaults = defaults.filter((d) => wanted.includes(d.id));
+        }
+        const have = new Set(existing.map((s) => s.name.toLowerCase()));
       const toAdd = defaults.filter((d) => !have.has(d.name.toLowerCase()));
       let sort = existing.reduce((m, s) => Math.max(m, Number(s.sortOrder)), 0);
       for (const d of toAdd) {
