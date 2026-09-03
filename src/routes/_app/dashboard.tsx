@@ -6,6 +6,7 @@ import {
   MetricCard,
   PageHeader,
   PageLoading,
+  PriorityBadge,
   StatusBadge,
 } from "~/components/app/pageStates";
 import { formatDateTime, formatRelative } from "~/lib/format";
@@ -70,8 +71,17 @@ function DashboardPage() {
         {/* Recent lead activity */}
         <section aria-labelledby="recent-leads" className="rounded-xl border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
-            <h2 id="recent-leads" className="text-sm font-semibold text-slate-900">
+            <h2 id="recent-leads" className="flex items-center gap-2 text-sm font-semibold text-slate-900">
               Recent leads
+              {data.metrics.emergencyLeads > 0 ? (
+                <a
+                  href="/leads?priority=emergency"
+                  title="Open leads marked emergency"
+                  className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-semibold text-red-700 ring-1 ring-inset ring-red-600/20 hover:bg-red-100"
+                >
+                  🔴 {data.metrics.emergencyLeads} emergency
+                </a>
+              ) : null}
             </h2>
             <a href="/leads" className="text-xs font-semibold text-brand-700 hover:text-brand-800">
               View all
@@ -92,6 +102,7 @@ function DashboardPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="truncate text-sm font-semibold text-slate-900">{l.contactName}</p>
+                        <PriorityBadge priority={l.priority} />
                         <StatusBadge status={l.status} />
                       </div>
                       <p className="mt-0.5 truncate text-sm text-slate-600">{l.serviceNeed}</p>
