@@ -6,6 +6,7 @@ import {
   getSettingsFn,
   removeServiceAreaFn,
   saveBusinessHoursFn,
+  saveEmergencyPrefsFn,
   saveNotificationPrefsFn,
   seedServicesFromDefaultsFn,
   skipOnboardingFn,
@@ -20,15 +21,37 @@ import { COMMON_TIMEZONES, US_STATES, type SettingsView } from "~/lib/settingsTy
 const inputCls =
   "w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-50 disabled:text-slate-400";
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 9;
 
+/**
+ * Wizard labels (owner brief #12, 9 steps: account -> company info -> services
+ * -> hours -> emergency prefs -> notifications -> phone number -> test AI ->
+ * activate). Step 1 "Account" is complete at signup (the session IS the
+ * account) and has no server-derived done-flag; DERIVED_LABELS below mirror
+ * the 8 derived steps in settingsFns ONBOARDING_STEPS so the nudge's 0-based
+ * resumeStep can be mapped to a wizard step.
+ */
 const STEP_LABELS = [
+  "Account",
   "Company info",
-  "Services",
+  "Services & area",
   "Business hours",
-  "Service areas",
+  "Emergency prefs",
   "Notifications",
-  "Review",
+  "Phone number",
+  "Test the AI",
+  "Review & activate",
+] as const;
+
+const DERIVED_LABELS = [
+  "Company info",
+  "Services & area",
+  "Business hours",
+  "Emergency prefs",
+  "Notifications",
+  "Phone number",
+  "Test the AI",
+  "Review & activate",
 ] as const;
 
 /** dayOfWeek -> label, Monday-first (matches DB 0=Mon..6=Sun convention). */
@@ -119,12 +142,13 @@ function OnboardingPage() {
   const [step, setStep] = useState(1);
   const [skip, setSkip] = useState<SaveState>({ kind: "idle" });
   // Resume: jump to the first incomplete step once the nudge data arrives.
-  // resumeStep is a 1-based step id (1-6); -1/6 means everything is done.
+  // resumeStep is the 0-based index into the 8 server-derived steps; wizard
+  // step = derived index + 2 (step 1 "Account" has no derived done-flag).
   useEffect(() => {
     let alive = true;
     getOnboardingNudgeFn()
       .then((n) => {
-        if (alive && n && n.resumeStep >= 2 && n.resumeStep <= 5) setStep(n.resumeStep);
+        if (alive && n && n.resumeStep >= 0 && n.resumeStep <= 7) setStep(n.resumeStep + 2);
       })
       .catch(() => {});
     return () => {
@@ -148,10 +172,10 @@ function OnboardingPage() {
     <div className="mx-auto max-w-2xl">
       <PageHeader
         title="Set up MissedCall AI"
-        description="Six quick steps so missed calls become booked jobs."
+        description="Nine quick steps so missed calls become booked jobs."
       />
 
-      {/* Progress: "Step X of 6" + percent bar */}
+      {/* Progress: "Step X of 9" + percent bar */}
       <div className="mb-6">
         <div className="flex items-center justify-between text-sm">
           <p className="font-medium text-slate-700">
@@ -181,12 +205,15 @@ function OnboardingPage() {
         </ol>
       </div>
 
-      {step === 1 ? <CompanyInfoStep view={data} onDone={() => setStep(2)} /> : null}
-      {step === 2 ? <ServicesStep view={data} onBack={() => setStep(1)} onDone={() => setStep(3)} /> : null}
-      {step === 3 ? <HoursStep view={data} onBack={() => setStep(2)} onDone={() => setStep(4)} /> : null}
-      {step === 4 ? <AreasStep view={data} onBack={() => setStep(3)} onDone={() => setStep(5)} /> : null}
-      {step === 5 ? <PrefsStep view={data} onBack={() => setStep(4)} onDone={() => setStep(6)} /> : null}
-      {step === 6 ? <ReviewStep view={data} onBack={() => setStep(5)} /> : null}
+      {step === 1 ? <AccountStep view={data} onDone={() => setStep(2)} /> : null}
+      {step === 2 ? <CompanyInfoStep view={data} onDone={() => setStep(3)} /> : null}
+      {step === 3 ? <ServicesStep view={data} onBack={() => setStep(2)} onDone={() => setStep(4)} /> : null}
+      {step === 4 ? <HoursStep view={data} onBack={() => setStep(3)} onDone={() => setStep(5)} /> : null}
+      {step === 5 ? <EmergencyStep view={data} onBack={() => setStep(4)} onDone={() => setStep(6)} /> : null}
+      {step === 6 ? <PrefsStep view={data} onBack={() => setStep(5)} onDone={() => setStep(7)} /> : null}
+      {step === 7 ? <PhoneStep view={data} onBack={() => setStep(6)} onDone={() => setStep(8)} /> : null}
+      {step === 8 ? <TestAiStep onBack={() => setStep(7)} onDone={() => setStep(9)} /> : null}
+      {step === 9 ? <ReviewStep view={data} onBack={() => setStep(8)} /> : null}
 
       <div className="mt-6 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
         <SaveFeedback state={skip} />
@@ -396,6 +423,15 @@ function ServicesStep({
           ))}
         </ul>
       </fieldset>
+      {/* Brief #8/#9: service areas fold into the services step — "what you do
+         + where you do it". Areas save immediately as they are added. */}
+      <div className="mt-6 border-t border-slate-100 pt-5">
+        <h3 className="text-sm font-semibold text-slate-900">Where you work</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          ZIP codes or cities you serve — the AI uses this to accept or politely decline out-of-area jobs.
+        </p>
+        <AreaEditor view={view} />
+      </div>
       <div className="mt-5 flex items-center justify-between gap-3">
         <SaveFeedback state={save} />
         <div className="flex items-center gap-2">
@@ -550,17 +586,10 @@ function HoursStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: service areas (removable chips + add form)
+// Step 3 helper: area editor (chips + add form), shared shape with the old
+// standalone AreasStep — areas now live on the Services step per brief #8.
 // ---------------------------------------------------------------------------
-function AreasStep({
-  view,
-  onBack,
-  onDone,
-}: {
-  view: SettingsView;
-  onBack: () => void;
-  onDone: () => void;
-}) {
+function AreaEditor({ view }: { view: SettingsView }) {
   const canEdit = view.canEdit;
   const [areas, setAreas] = useState<AreaChip[]>(() => toAreaChips(view.serviceAreas));
   const [kind, setKind] = useState<"zip" | "city">("zip");
@@ -568,7 +597,6 @@ function AreasStep({
   const [stateCode, setStateCode] = useState("");
   const [addError, setAddError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [save, setSave] = useState<SaveState>({ kind: "idle" });
 
   const onAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -589,10 +617,10 @@ function AreasStep({
     setBusy(true);
     const res = await addServiceAreaFn({ data: { kind, value: trimmed, state: stateCode || undefined } });
     if (res.ok) {
-      // Optimistic chip with a temp id, then reconcile with the server's list for real ids.
+      // Optimistic chip with a temp id, then reconcile with the server list.
       setAreas((prev) => [
         ...prev,
-        { id: `tmp-${Date.now()}`, kind, value: trimmed, state: stateCode || null },
+        { id: "tmp-" + String(Date.now()), kind, value: trimmed, state: stateCode || null },
       ]);
       setValue("");
       setStateCode("");
@@ -612,24 +640,19 @@ function AreasStep({
     const res = await removeServiceAreaFn({ data: { id } });
     if (!res.ok) {
       setAreas(prev);
-      setSave({ kind: "error", message: res.error });
+      setAddError(res.error);
     }
     setBusy(false);
   };
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Service areas</h2>
-      <p className="mt-1 text-sm text-slate-600">
-        Where you take jobs — ZIP codes or cities. You can change this anytime in Settings.
-      </p>
-
-      <div className="mt-4 flex flex-wrap gap-2">
+    <div className="mt-3">
+      <div className="flex flex-wrap gap-2">
         {areas.length === 0 ? (
           <p className="text-sm text-slate-500">No areas yet — add at least one below.</p>
         ) : (
           areas.map((a) => {
-            const chipLabel = a.kind === "zip" ? a.value : a.value + (a.state ? `, ${a.state}` : "");
+            const chipLabel = a.kind === "zip" ? a.value : a.value + (a.state ? ", " + a.state : "");
             return (
               <span
                 key={a.id}
@@ -654,7 +677,7 @@ function AreasStep({
         )}
       </div>
 
-      <form onSubmit={onAdd} className="mt-4 flex flex-wrap items-start gap-3">
+      <form onSubmit={onAdd} className="mt-3 flex flex-wrap items-start gap-3">
         <div className="w-28">
           <label htmlFor="onb-area-kind" className="mb-1.5 block text-sm font-medium text-slate-700">
             Kind
@@ -701,8 +724,8 @@ function AreasStep({
               onChange={(e) => setStateCode(e.target.value)}
             >
               <option value="">—</option>
-              {US_STATES.map((s) => (
-                <option key={s} value={s}>{s}</option>
+              {US_STATES.map((st) => (
+                <option key={st} value={st}>{st}</option>
               ))}
             </select>
           </div>
@@ -714,15 +737,128 @@ function AreasStep({
         </div>
       </form>
       <FieldError msg={addError} />
+    </div>
+  );
+}
 
+// ---------------------------------------------------------------------------
+// Step 1: account (complete at signup — informational, keeps the brief's 9
+// steps without faking a done-flag the server does not track)
+// ---------------------------------------------------------------------------
+function AccountStep({ view, onDone }: { view: SettingsView; onDone: () => void }) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Account</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        Your account is live — this step is already done.
+      </p>
+      <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <div className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
+          <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Business</dt>
+          <dd className="text-sm text-slate-900">{view.business.name}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
+          <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Signed in as</dt>
+          <dd className="text-sm text-slate-900">{view.business.email}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
+          <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Your role</dt>
+          <dd className="text-sm text-slate-900">{view.role}</dd>
+        </div>
+      </dl>
+      <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+        Your 14-day free trial started at signup — plan options are on the Billing page whenever you are ready.
+      </p>
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <Button onClick={onDone}>Continue</Button>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 5: emergency prefs (brief #1/#8: after-hours policy + instructions the
+// AI follows on emergency calls; delivery waits for the messaging provider)
+// ---------------------------------------------------------------------------
+function EmergencyStep({
+  view,
+  onBack,
+  onDone,
+}: {
+  view: SettingsView;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  const canEdit = view.canEdit;
+  const [prefs, setPrefs] = useState(view.emergencyPrefs);
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const onContinue = async () => {
+    setSave({ kind: "saving" });
+    const res = await saveEmergencyPrefsFn({ data: prefs as unknown as Record<string, unknown> });
+    if (res.ok) {
+      setSave({ kind: "saved", message: "Emergency preferences saved." });
+      onDone();
+    } else {
+      setSave({ kind: "error", message: res.error });
+    }
+  };
+
+  const toggles: { key: "afterHoursEmergency" | "emergencyNotificationEmail" | "emergencyNotificationSms"; label: string }[] = [
+    { key: "afterHoursEmergency", label: "Take emergency calls after hours (flooding, burst pipes, gas)" },
+    { key: "emergencyNotificationEmail", label: "Email me the moment a lead is an emergency" },
+    { key: "emergencyNotificationSms", label: "Text me the moment a lead is an emergency" },
+  ];
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Emergency prefs</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        How the AI handles emergencies when you are on a job or closed.
+      </p>
+      <fieldset disabled={!canEdit} className="mt-4">
+        <legend className="sr-only">Emergency preferences</legend>
+        <ul className="space-y-2">
+          {toggles.map((t) => (
+            <li key={t.key}>
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 transition-colors hover:bg-slate-50 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
+                  checked={prefs[t.key]}
+                  onChange={(e) => setPrefs((prev) => ({ ...prev, [t.key]: e.target.checked }))}
+                />
+                <span className="text-sm font-medium text-slate-900">{t.label}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-3">
+          <label htmlFor="onb-emg-instructions" className="mb-1.5 block text-sm font-medium text-slate-700">
+            Emergency instructions <span className="font-normal text-slate-400">(the AI follows these)</span>
+          </label>
+          <textarea
+            id="onb-emg-instructions"
+            className={inputCls + " min-h-24"}
+            maxLength={500}
+            rows={4}
+            value={prefs.emergencyInstructions}
+            placeholder="e.g. Tell the caller to shut off the main water valve if it is safe, take the address first, and we will call right back."
+            onChange={(e) => setPrefs((prev) => ({ ...prev, emergencyInstructions: e.target.value }))}
+          />
+        </div>
+      </fieldset>
+      <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+        Saved now. Emergency email/SMS delivery switches on when the messaging provider is connected (Phase 2) — nothing is sent until then.
+      </p>
       <div className="mt-5 flex items-center justify-between gap-3">
         <SaveFeedback state={save} />
         <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onBack} disabled={busy}>
+          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving"}>
             Back
           </Button>
-          <Button onClick={onDone} disabled={busy}>
-            Continue
+          <Button onClick={onContinue} disabled={!canEdit || save.kind === "saving"}>
+            {save.kind === "saving" ? "Saving…" : "Continue"}
           </Button>
         </div>
       </div>
@@ -730,6 +866,81 @@ function AreasStep({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Step 7: phone number (honest placeholder until the messaging provider is
+// connected — the number is assigned then, nothing to fake today)
+// ---------------------------------------------------------------------------
+function PhoneStep({
+  view,
+  onBack,
+  onDone,
+}: {
+  view: SettingsView;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Phone number</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        Missed-call text-back runs through a dedicated MissedCall AI number, so your main line stays free.
+      </p>
+      <div className="mt-4 rounded-xl border border-slate-200 p-4">
+        <p className="text-sm text-slate-700">
+          Your main line: <span className="font-semibold">{view.business.phone || "add one in Company info"}</span>
+        </p>
+        <p className="mt-2 text-sm text-slate-500">
+          Your texting number is assigned automatically once the messaging provider is connected (next build).
+          Nothing to configure here yet.
+        </p>
+      </div>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <span />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <Button onClick={onDone}>Continue</Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 8: test the AI (honest placeholder until the receptionist is live)
+// ---------------------------------------------------------------------------
+function TestAiStep({
+  onBack,
+  onDone,
+}: {
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Test the AI</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        Call or text your AI receptionist to hear how it answers before your customers do.
+      </p>
+      <div className="mt-4 rounded-xl border border-slate-200 p-4">
+        <p className="text-sm text-slate-500">
+          Test calls switch on with the AI receptionist (next build). Finish setup now — this step
+          stays available from Settings.
+        </p>
+      </div>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <span />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <Button onClick={onDone}>Continue</Button>
+        </div>
+      </div>
+    </section>
+  );
+}
 // ---------------------------------------------------------------------------
 // Step 5: notification preferences (4 checkboxes + honest delivery note)
 // ---------------------------------------------------------------------------
@@ -859,24 +1070,34 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
     setSave({ kind: "saving" });
     // getOnboardingNudgeFn resolves to the nudge object itself (or null on failure) — no result wrapper.
     const nudge = await getOnboardingNudgeFn();
+    // "Phone number" and "Test the AI" stay open until the messaging provider
+    // and receptionist are connected (build 3+) — they must not block finish.
+    // Everything self-serve done -> finish succeeds even below 100%.
     if (nudge && nudge.percent === 100) {
       await navigate({ to: "/dashboard" });
     } else if (nudge) {
-      // resumeStep is an index into the wizard's steps array (-1 = none), not a 1-based step number.
+      // resumeStep is a 0-based index into the 8 server-derived steps; wizard
+      // step = derived index + 2 (step 1 "Account" has no derived done-flag).
       const idx = typeof nudge.resumeStep === "number" ? nudge.resumeStep : -1;
-      const nextUp = idx >= 1 && idx < STEP_LABELS.length ? "Next up: " + STEP_LABELS[idx] + ". " : "";
+      const nextUp =
+        idx >= 0 && idx < DERIVED_LABELS.length ? "Next up: " + DERIVED_LABELS[idx] + ". " : "";
       const missing: string[] = [];
       if (!view.business.name) missing.push("Company info");
       if (view.services.length === 0) missing.push("Services");
+      if (view.serviceAreas.length === 0) missing.push("Service area (on the Services step)");
       if (
         view.hours.length < BUSINESS_DAYS.length ||
         BUSINESS_DAYS.every((d) => !view.hours.find((h) => h.dayOfWeek === d)?.isOpen)
       ) {
         missing.push("Business hours (at least one open day)");
       }
-      if (view.serviceAreas.length === 0) missing.push("Service areas");
+      if (!view.emergencyPrefsSaved) missing.push("Emergency prefs");
       if (!view.notificationPrefs.onMissedCallSms && !view.notificationPrefs.onNewLeadEmail) {
         missing.push("Notifications (turn at least one on)");
+      }
+      if (missing.length === 0) {
+        await navigate({ to: "/dashboard" });
+        return;
       }
       const msg =
         nextUp +
@@ -898,8 +1119,15 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
     ],
     ["Time zone", b.timezone],
     ["Services", String(view.services.length) + " selected"],
-    ["Hours", formatHoursSummary(view.hours)],
     ["Service areas", String(view.serviceAreas.length) + " added"],
+    ["Hours", formatHoursSummary(view.hours)],
+    [
+      "Emergency prefs",
+      view.emergencyPrefs.afterHoursEmergency
+        ? "After-hours emergencies on" +
+          (view.emergencyPrefs.emergencyInstructions ? " - instructions saved" : "")
+        : "Off (no after-hours emergency handling)",
+    ],
     [
       "Notifications",
       NOTIFICATION_PREF_KEYS.filter((p) => view.notificationPrefs[p.key])

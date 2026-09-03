@@ -11,6 +11,16 @@ import { AuthError } from "~/lib/server/auth";
 import { getSessionFromRequest, requireAuth, requireRole } from "~/lib/server/auth.server";
 import { countUsers } from "~/db/queries/auth";
 
+/** Client-safe trial state for the app-shell banner (Phase 2). */
+export interface TrialStatus {
+  plan: string;
+  onPaidPlan: boolean;
+  /** ISO string or null — Date objects never cross the wire. */
+  trialEndsAt: string | null;
+  trialDaysRemaining: number;
+  trialExpired: boolean;
+}
+
 /** Client-safe view of the session (no hashes, no tokens). */
 export interface CurrentUserView {
   userId: string;
@@ -59,6 +69,31 @@ export const getTeamCountFn = createServerFn({ method: "GET" }).handler(async ()
     return authErrorToResult(e);
   }
 });
+
+/**
+ * Trial-state read for the persistent app-shell banner. Reads stay open for
+ * every role; the banner itself renders only for owner/manager.
+ */
+export const getTrialStatusFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<TrialStatus | null> => {
+    const ctx = await getSessionFromRequest();
+    if (!ctx) return null;
+    const plan = ctx.business.plan;
+    const trialEndsAt = ctx.business.trialEndsAt;
+    const expired = trialEndsAt != null && trialEndsAt.getTime() <= Date.now();
+    const remaining =
+      trialEndsAt == null || expired
+        ? 0
+        : Math.max(1, Math.ceil((trialEndsAt.getTime() - Date.now()) / 86_400_000));
+    return {
+      plan,
+      onPaidPlan: plan === "starter" || plan === "pro",
+      trialEndsAt: trialEndsAt ? trialEndsAt.toISOString() : null,
+      trialDaysRemaining: remaining,
+      trialExpired: expired,
+    };
+  },
+);
 
 /** Employee-readable example: any authenticated user may call it. */
 export const getMyRoleFn = createServerFn({ method: "GET" }).handler(async (): Promise<

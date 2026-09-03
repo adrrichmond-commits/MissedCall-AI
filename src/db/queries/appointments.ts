@@ -38,14 +38,7 @@ export interface UpdateAppointmentInput {
   notes?: string | null;
 }
 
-const FILTERABLE_STATUS: AppointmentStatus[] = [
-  "scheduled",
-  "confirmed",
-  "in_progress",
-  "completed",
-  "cancelled",
-  "no_show",
-];
+const FILTERABLE_STATUS: AppointmentStatus[] = ["requested", "confirmed", "declined", "completed"];
 
 /**
  * Build the WHERE clause for appointment reads. Every column is qualified with
@@ -124,7 +117,7 @@ export async function countAppointmentsByStatus(businessId: string): Promise<Rec
   const db = sql();
   const rows = await db`SELECT status, count(*) AS n FROM appointments WHERE business_id = ${businessId} GROUP BY status`;
   const out: Record<AppointmentStatus, number> = {
-    scheduled: 0, confirmed: 0, in_progress: 0, completed: 0, cancelled: 0, no_show: 0,
+    requested: 0, confirmed: 0, declined: 0, completed: 0,
   };
   for (const row of rows as unknown as { status: AppointmentStatus; n: unknown }[]) {
     out[row.status] = Number(row.n);
@@ -132,14 +125,28 @@ export async function countAppointmentsByStatus(businessId: string): Promise<Rec
   return out;
 }
 
-/** Active upcoming appointments (not cancelled / no-show). */
+/** Active upcoming appointments (requested or confirmed — the actionable set). */
 export async function countUpcoming(businessId: string): Promise<number> {
   assertServer();
   const db = sql();
   const rows = await db`
     SELECT count(*) AS n FROM appointments
     WHERE business_id = ${businessId} AND scheduled_at >= now()
-      AND status NOT IN ('cancelled', 'no_show')`;
+      AND status IN ('requested', 'confirmed')`;
+  return Number((rows[0] as unknown as { n: unknown }).n);
+}
+
+/** Confirmed upcoming appointments (dashboard metric: the confirmed slice). */
+export async function countUpcomingByStatus(
+  businessId: string,
+  status: AppointmentStatus,
+): Promise<number> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT count(*) AS n FROM appointments
+    WHERE business_id = ${businessId} AND scheduled_at >= now()
+      AND status = ${status}`;
   return Number((rows[0] as unknown as { n: unknown }).n);
 }
 
@@ -209,7 +216,7 @@ export async function createAppointment(businessId: string, input: CreateAppoint
       input.technicianName ?? null,
       input.scheduledAt.toISOString(),
       input.durationMinutes ?? 60,
-      input.status ?? "scheduled",
+      input.status ?? "requested",
       input.address ?? null,
       input.notes ?? null,
     ],
@@ -252,12 +259,23 @@ export async function updateAppointment(
   return (rows[0] as unknown as Appointment | undefined) ?? null;
 }
 
-export async function cancelAppointment(businessId: string, appointmentId: string): Promise<Appointment | null> {
+/**
+ * Request-driven status change (migration 006): the business confirms or
+ * declines a REQUESTED appointment. Guarded transitions — only requested
+ * appointments may be confirmed or declined, and declined ones may be
+ * re-confirmed (the owner called the customer back).
+ */
+export async function setAppointmentStatus(
+  businessId: string,
+  appointmentId: string,
+  next: "confirmed" | "declined",
+): Promise<Appointment | null> {
   assertServer();
   const db = sql();
   const rows = await db`
-    UPDATE appointments SET status = 'cancelled'
+    UPDATE appointments SET status = ${next}
     WHERE id = ${appointmentId} AND business_id = ${businessId}
+      AND status IN ('requested', 'declined')
     RETURNING *`;
   return (rows[0] as unknown as Appointment | undefined) ?? null;
 }

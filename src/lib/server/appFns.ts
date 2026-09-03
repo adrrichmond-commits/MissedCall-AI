@@ -9,7 +9,7 @@
  * queries; Dates are coerced to ISO strings before crossing the wire.
  */
 import { createServerFn } from "@tanstack/react-start";
-import { requireAuth, requireRole } from "~/lib/server/auth.server";
+import { requireActiveWrite, requireAuth } from "~/lib/server/auth.server";
 import type { AuthContext } from "~/lib/server/auth";
 import { authErrorToResult } from "~/lib/server/sessionFns";
 import * as q from "~/db/queries";
@@ -17,6 +17,7 @@ import * as q from "~/db/queries";
 const LEAD_STATUSES = ["new", "contacted", "booked", "completed", "lost"] as const;
 const LEAD_SOURCES = ["missed_call", "web_form", "referral", "repeat_customer", "other"] as const;
 const LEAD_PRIORITIES = ["emergency", "high", "normal"] as const;
+/** Phase 2 appointment lifecycle (migration 006). */
 const CONVERSATION_STATUSES = ["active", "awaiting_customer", "booked", "closed"] as const;
 
 function pickEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
@@ -53,6 +54,9 @@ export interface DashboardData {
     newLeadsThisWeek: number;
     openConversations: number;
     upcomingAppointments: number;
+    /** Split of the upcoming metric: confirmed vs requested (migration 006). */
+    confirmedAppointments: number;
+    requestedAppointments: number;
     /** won / (won + lost) — a conversion proxy, not a promise. */
     conversionRate: number | null;
     /** Open (not booked/completed/lost) leads marked priority='emergency'. */
@@ -85,11 +89,13 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
       const ctx = await requireAuth();
       const businessId = ctx.business.id;
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const [newLeadsThisWeek, convoCounts, upcoming, leadStatusCounts, priorityCounts, recentLeads, recentAppointments] =
+      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments] =
         await Promise.all([
           q.countLeadsCreatedSince(businessId, weekAgo),
           q.countConversationsByStatus(businessId),
           q.countUpcoming(businessId),
+          q.countUpcomingByStatus(businessId, "confirmed"),
+          q.countUpcomingByStatus(businessId, "requested"),
           q.countLeadsByStatus(businessId),
           q.countLeadsByPriority(businessId),
           q.listLeads(businessId, {}, { limit: 6, order: "desc" }),
@@ -103,6 +109,8 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
             newLeadsThisWeek,
             openConversations: convoCounts.active + convoCounts.awaiting_customer,
             upcomingAppointments: upcoming,
+            confirmedAppointments: upcomingConfirmed,
+            requestedAppointments: upcomingRequested,
             conversionRate:
               leadStatusCounts.completed + leadStatusCounts.lost > 0
                 ? leadStatusCounts.completed / (leadStatusCounts.completed + leadStatusCounts.lost)
@@ -286,7 +294,7 @@ export const updateLeadStatusFn = createServerFn({ method: "POST" })
       data,
     }): Promise<AppResult<{ leadId: string; status: string; convertedAt: string | null }>> => {
       try {
-        const ctx: AuthContext = await requireRole("owner", "manager");
+        const ctx: AuthContext = await requireActiveWrite("owner", "manager");
         const businessId = ctx.business.id;
         const leadId = typeof data?.leadId === "string" ? data.leadId.trim() : "";
         const status = pickEnum(data?.status, LEAD_STATUSES);
@@ -310,6 +318,67 @@ export const updateLeadStatusFn = createServerFn({ method: "POST" })
             convertedAt: updated.convertedAt ? updated.convertedAt.toISOString() : null,
           },
         };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
+
+// ---------------------------------------------------------------------------
+// Appointment requests (migration 006): the business confirms or declines a
+// REQUESTED booking. Owner + manager only, mirroring updateLeadStatusFn;
+// writes go through requireActiveWrite so an expired trial blocks them.
+// ---------------------------------------------------------------------------
+export const confirmAppointmentFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { appointmentId?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<{ appointmentId: string; status: string }>> => {
+      try {
+        const ctx = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        const appointmentId =
+          typeof data?.appointmentId === "string" ? data.appointmentId.trim() : "";
+        if (!appointmentId) return { ok: false, status: 400, error: "Missing appointment." };
+        const existing = await q.getAppointment(businessId, appointmentId);
+        if (!existing) return { ok: false, status: 404, error: "Appointment not found." };
+        if (existing.status !== "requested" && existing.status !== "declined") {
+          return {
+            ok: false,
+            status: 400,
+            error: "Only requested appointments can be confirmed.",
+          };
+        }
+        const updated = await q.setAppointmentStatus(businessId, appointmentId, "confirmed");
+        if (!updated) return { ok: false, status: 404, error: "Appointment not found." };
+        return { ok: true, data: { appointmentId: updated.id, status: updated.status } };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
+
+export const declineAppointmentFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { appointmentId?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<{ appointmentId: string; status: string }>> => {
+      try {
+        const ctx = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        const appointmentId =
+          typeof data?.appointmentId === "string" ? data.appointmentId.trim() : "";
+        if (!appointmentId) return { ok: false, status: 400, error: "Missing appointment." };
+        const existing = await q.getAppointment(businessId, appointmentId);
+        if (!existing) return { ok: false, status: 404, error: "Appointment not found." };
+        if (existing.status !== "requested") {
+          return {
+            ok: false,
+            status: 400,
+            error: "Only requested appointments can be declined.",
+          };
+        }
+        const updated = await q.setAppointmentStatus(businessId, appointmentId, "declined");
+        if (!updated) return { ok: false, status: 404, error: "Appointment not found." };
+        return { ok: true, data: { appointmentId: updated.id, status: updated.status } };
       } catch (e) {
         return authErrorToResult(e);
       }

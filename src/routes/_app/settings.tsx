@@ -8,6 +8,7 @@ import {
   getSettingsFn,
   removeServiceAreaFn,
   saveBusinessHoursFn,
+  saveEmergencyPrefsFn,
   saveNotificationPrefsFn,
   seedServicesFromDefaultsFn,
   updateBusinessInfoFn,
@@ -22,6 +23,7 @@ import {
   DAY_LABELS,
   NOTIFICATION_PREF_KEYS,
   US_STATES,
+  type EmergencyPrefs,
   type NotificationPrefs,
   type SettingsView,
 } from "~/lib/settingsTypes";
@@ -126,6 +128,7 @@ function SettingsPage() {
         <ServicesSection view={view} refresh={refresh} canEdit={canEdit} />
         <AreasSection view={view} refresh={refresh} canEdit={canEdit} />
         <NotificationsSection view={view} refresh={refresh} canEdit={canEdit} />
+        <EmergencySection view={view} refresh={refresh} canEdit={canEdit} />
         {view.role === "owner" ? <SubscriptionSection /> : null}
       </div>
     </div>
@@ -846,6 +849,99 @@ function NotificationsSection({
           {canEdit ? (
             <Button type="submit" disabled={save.kind === "saving"}>
               {save.kind === "saving" ? "Saving…" : "Save preferences"}
+            </Button>
+          ) : null}
+        </div>
+      </form>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Emergency prefs (brief #1/#8: after-hours policy + instructions the AI
+// follows on emergency calls; delivery waits for the messaging provider)
+// ---------------------------------------------------------------------------
+function EmergencySection({
+  view,
+  refresh,
+  canEdit,
+}: {
+  view: SettingsView;
+  refresh: () => Promise<unknown>;
+  canEdit: boolean;
+}) {
+  const [prefs, setPrefs] = useState<EmergencyPrefs>(view.emergencyPrefs);
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSave({ kind: "saving" });
+    const res = await saveEmergencyPrefsFn({ data: prefs as unknown as Record<string, unknown> });
+    if (res.ok) {
+      setSave({ kind: "saved", message: res.data.message });
+      await refresh();
+    } else {
+      setSave({ kind: "error", message: res.error });
+    }
+  };
+
+  const toggles: { key: "afterHoursEmergency" | "emergencyNotificationEmail" | "emergencyNotificationSms"; title: string; hint: string }[] = [
+    {
+      key: "afterHoursEmergency",
+      title: "Take emergency calls after hours",
+      hint: "The AI flags flooding, burst pipes, and gas concerns even when you are closed.",
+    },
+    {
+      key: "emergencyNotificationEmail",
+      title: "Email me on an emergency lead",
+      hint: "Instant email the moment a call is classified an emergency.",
+    },
+    {
+      key: "emergencyNotificationSms",
+      title: "Text me on an emergency lead",
+      hint: "SMS to your phone the moment a call is classified an emergency.",
+    },
+  ];
+
+  return (
+    <SectionCard title="Emergency prefs" description="How the AI handles emergency calls and alerts you.">
+      <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200">
+        Preferences are saved now. Emergency email/SMS delivery switches on when the messaging
+        provider is connected (Phase 2) — nothing is sent until then.
+      </p>
+      <form onSubmit={onSubmit} className="space-y-3">
+        {toggles.map((t) => (
+          <label key={t.key} className="flex items-start gap-3 rounded-xl px-2 py-2 hover:bg-slate-50">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+              checked={prefs[t.key]}
+              disabled={!canEdit}
+              onChange={(e) => setPrefs((p) => ({ ...p, [t.key]: e.target.checked }))}
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-800">{t.title}</span>
+              <span className="block text-xs text-slate-500">{t.hint}</span>
+            </span>
+          </label>
+        ))}
+        <Field label="Emergency instructions" htmlFor="emg-instructions" hint="What should the AI say and do on an emergency call? Up to 500 characters.">
+          <textarea
+            id="emg-instructions"
+            className={inputCls + " min-h-24"}
+            maxLength={500}
+            rows={4}
+            value={prefs.emergencyInstructions}
+            placeholder="e.g. Tell the caller to shut off the main water valve if it is safe, take the address first, and we will call right back."
+            disabled={!canEdit}
+            onChange={(e) => setPrefs((p) => ({ ...p, emergencyInstructions: e.target.value }))}
+          />
+        </Field>
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <SaveFeedback state={save} />
+          {canEdit ? (
+            <Button type="submit" disabled={save.kind === "saving"}>
+              {save.kind === "saving" ? "Saving…" : "Save emergency prefs"}
             </Button>
           ) : null}
         </div>

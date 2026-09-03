@@ -8,15 +8,21 @@
  * typed results instead of throwing.
  */
 import { createServerFn } from "@tanstack/react-start";
-import { getSessionFromRequest, requireAuth, requireRole } from "~/lib/server/auth.server";
+import {
+  getSessionFromRequest,
+  requireActiveWrite,
+  requireAuth,
+} from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
 import * as q from "~/db/queries";
 import type { Business } from "~/db/schema";
 import {
   BUSINESS_DAYS,
   COMMON_TIMEZONES,
+  DEFAULT_EMERGENCY_PREFS,
   DEFAULT_NOTIFICATION_PREFS,
   NOTIFICATION_PREF_KEYS,
+  type EmergencyPrefs,
   type NotificationPrefs,
   type OnboardingState,
   type SettingsView,
@@ -107,6 +113,22 @@ function hhmm(value: unknown, field: string): string {
   return value;
 }
 
+/**
+ * Emergency prefs live in the same settings jsonb blob as notification prefs
+ * (each sanitizer picks only its own keys).
+ */
+function sanitizeEmergencyPrefs(raw: unknown): EmergencyPrefs {
+  const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const out = { ...DEFAULT_EMERGENCY_PREFS };
+  for (const key of ["afterHoursEmergency", "emergencyNotificationEmail", "emergencyNotificationSms"] as const) {
+    if (typeof source[key] === "boolean") out[key] = source[key] as boolean;
+  }
+  if (typeof source.emergencyInstructions === "string") {
+    out.emergencyInstructions = source.emergencyInstructions.slice(0, 500);
+  }
+  return out;
+}
+
 /** Notification prefs are stored as a known-shape jsonb object on businesses.settings. */
 function sanitizeNotificationPrefs(raw: unknown): NotificationPrefs {
   const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -120,13 +142,25 @@ function sanitizeNotificationPrefs(raw: unknown): NotificationPrefs {
 // ---------------------------------------------------------------------------
 // Onboarding progress (derived from DB state — nothing extra is stored)
 // ---------------------------------------------------------------------------
+// Phase 2 nine-step onboarding (owner brief section 12):
+// account -> company info -> services -> hours -> emergency prefs ->
+// notification phone/email -> phone number -> test AI -> activate.
+// "Account" is complete at signup (the session IS the account) and is never
+// unfinished, so the derived list below has 8 entries. Service areas (Phase 1
+// step 4) fold into the services step — "what you do + where you do it" —
+// matching the brief's Business Settings grouping. "Phone number" and "test
+// AI" are honest placeholders until the Twilio + LLM providers are connected
+// (Phase 2 build #3+), so their done flags stay false and the wizard lists
+// them as upcoming rather than faking completion.
 const ONBOARDING_STEPS = [
   { id: 1, key: "company" as const, label: "Company info" },
-  { id: 2, key: "services" as const, label: "Services" },
+  { id: 2, key: "services" as const, label: "Services & area" },
   { id: 3, key: "hours" as const, label: "Business hours" },
-  { id: 4, key: "areas" as const, label: "Service areas" },
+  { id: 4, key: "emergency" as const, label: "Emergency prefs" },
   { id: 5, key: "notifications" as const, label: "Notifications" },
-  { id: 6, key: "review" as const, label: "Review" },
+  { id: 6, key: "phone" as const, label: "Phone number" },
+  { id: 7, key: "testAi" as const, label: "Test the AI" },
+  { id: 8, key: "review" as const, label: "Review & activate" },
 ];
 
 interface StepDoneArgs {
@@ -137,6 +171,7 @@ interface StepDoneArgs {
   configuredHours: boolean;
   prefs: NotificationPrefs;
   prefsTouched: boolean;
+  emergencyTouched: boolean;
 }
 
 function computeStepDone(args: StepDoneArgs): boolean[] {
@@ -145,14 +180,23 @@ function computeStepDone(args: StepDoneArgs): boolean[] {
     args.business.phone != null &&
     args.business.email != null &&
     args.business.addressLine1 != null;
+  // Step 1 "Account" is complete the moment the user can reach this code —
+  // the session IS the account — so it is not part of the derived list.
+  const servicesDone = args.serviceCount > 0 && args.areaCount > 0;
+  const coreDone = companyDone && servicesDone && args.configuredHours;
   return [
     companyDone,
-    args.serviceCount > 0,
+    // Services & area: at least one service AND one service area.
+    servicesDone,
     args.configuredHours,
-    args.areaCount > 0,
+    args.emergencyTouched,
     args.prefsTouched,
-    // Review counts as done only when every real step is done.
-    companyDone && args.serviceCount > 0 && args.configuredHours && args.areaCount > 0 && args.prefsTouched,
+    // Phone number: assigned once the messaging provider is connected.
+    false,
+    // Test AI: possible once the receptionist is live.
+    false,
+    // Review & activate: every self-serve step done.
+    coreDone && args.emergencyTouched && args.prefsTouched,
   ];
 }
 
@@ -170,7 +214,7 @@ function onboardingState(business: Business, done: boolean[]): OnboardingState {
     resumeStep: firstUnfinished,
     // The wizard is only pushed on businesses missing baseline configuration;
     // a business that explicitly skipped is never nagged again.
-    needsOnboarding: done.slice(0, 4).some((d) => !d) && !skipped,
+    needsOnboarding: done.slice(0, 5).some((d) => !d) && !skipped,
   };
 }
 
@@ -195,6 +239,7 @@ export const getSettingsFn = createServerFn({ method: "GET" }).handler(async ():
     // Hours are "configured" when all 7 days exist AND at least one day is open.
     const hourMap = new Map(hours.map((h) => [h.dayOfWeek, h]));
     const configuredHours = hourCount === 7 && BUSINESS_DAYS.some((d) => hourMap.get(d)?.isOpen);
+    const bizSettings = (b as unknown as { settings?: Record<string, unknown> }).settings ?? {};
     const done = computeStepDone({
       business: b,
       serviceCount,
@@ -202,9 +247,8 @@ export const getSettingsFn = createServerFn({ method: "GET" }).handler(async ():
       hourCount,
       configuredHours,
       prefs,
-      prefsTouched:
-        typeof (b as unknown as { settings?: Record<string, unknown> }).settings
-          ?.notificationPrefsSavedAt === "string",
+      prefsTouched: typeof bizSettings.notificationPrefsSavedAt === "string",
+      emergencyTouched: typeof bizSettings.emergencyPrefsSavedAt === "string",
     });
     return {
       ok: true,
@@ -249,6 +293,8 @@ export const getSettingsFn = createServerFn({ method: "GET" }).handler(async ():
         })),
         serviceDefaults: defaults.map((d) => ({ id: d.id, name: d.name, description: d.description })),
         notificationPrefs: prefs,
+        emergencyPrefs: sanitizeEmergencyPrefs(bizSettings),
+        emergencyPrefsSaved: typeof bizSettings.emergencyPrefsSavedAt === 'string',
         onboarding: onboardingState(b, done),
       },
     };
@@ -277,7 +323,7 @@ export const updateBusinessInfoFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as Partial<BusinessInfoInput>)
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       if (data.name !== undefined) {
         const name = str(data.name, "Business name", { max: 120, min: 2 });
@@ -321,7 +367,7 @@ export const saveBusinessHoursFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as HoursInput)
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       if (!Array.isArray(data.days)) throw new ValidationError("Hours payload is malformed.", "days");
       const byDay = new Map<number, HoursInput["days"][number]>();
@@ -371,7 +417,7 @@ export const addServiceFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as Partial<AddServiceInput>)
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const name = str(data.name, "Service name", { max: 100, min: 2 });
       let descFromDefault: string | null = null;
@@ -422,7 +468,7 @@ export const updateServiceFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as Partial<UpdateServiceInput>)
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const id = str(data.id, "Service", { max: 64 });
       const current = await q.getService(businessId, id);
@@ -452,7 +498,7 @@ export const deactivateServiceFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { id: string })
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const id = str(data?.id, "Service", { max: 64 });
       const updated = await q.updateService(businessId, id, { isActive: false });
@@ -467,7 +513,7 @@ export const deleteServiceFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { id: string })
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const id = str(data?.id, "Service", { max: 64 });
       const deleted = await q.deleteService(businessId, id);
@@ -491,7 +537,7 @@ export const seedServicesFromDefaultsFn = createServerFn({ method: "POST" })
   .handler(
     async ({ data }): Promise<SettingsResult<{ message: string; added: number }>> => {
       try {
-        const ctx = await requireRole("owner", "manager");
+        const ctx = await requireActiveWrite("owner", "manager");
         const businessId = ctx.business.id;
         const existing = await q.listServices(businessId);
         let defaults = await q.listServiceDefaults();
@@ -539,7 +585,7 @@ export const addServiceAreaFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as Partial<AddAreaInput>)
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const kind = data.kind === "zip" || data.kind === "city" ? data.kind : null;
       if (!kind) throw new ValidationError("Area type must be ZIP or city.", "kind");
@@ -565,7 +611,7 @@ export const removeServiceAreaFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { id: string })
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const id = str(data?.id, "Area", { max: 64 });
       const deleted = await q.deleteServiceArea(businessId, id);
@@ -584,7 +630,7 @@ export const saveNotificationPrefsFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as Record<string, unknown>)
   .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const prefs = sanitizeNotificationPrefs(data);
       const current = await q.getBusiness(businessId);
@@ -602,12 +648,37 @@ export const saveNotificationPrefsFn = createServerFn({ method: "POST" })
   });
 
 // ---------------------------------------------------------------------------
+// Write: emergency prefs (saved to businesses.settings; delivery of emergency
+// notifications waits for the Phase 2 messaging provider — stated in the UI)
+// ---------------------------------------------------------------------------
+export const saveEmergencyPrefsFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as Record<string, unknown>)
+  .handler(async ({ data }): Promise<SettingsResult<{ message: string }>> => {
+    try {
+      const ctx = await requireActiveWrite("owner", "manager");
+      const businessId = ctx.business.id;
+      const prefs = sanitizeEmergencyPrefs(data);
+      const current = await q.getBusiness(businessId);
+      if (!current) return { ok: false, status: 404, error: "Business not found." };
+      const settings = {
+        ...((current as unknown as { settings?: Record<string, unknown> }).settings ?? {}),
+        ...prefs,
+        emergencyPrefsSavedAt: new Date().toISOString(),
+      };
+      await q.updateBusinessSettings(businessId, settings);
+      return { ok: true, data: { message: "Emergency preferences saved." } };
+    } catch (e) {
+      return validationToResult(e);
+    }
+  });
+
+// ---------------------------------------------------------------------------
 // Onboarding: skip + lightweight nudge check for the app layout gate
 // ---------------------------------------------------------------------------
 export const skipOnboardingFn = createServerFn({ method: "POST" }).handler(
   async (): Promise<SettingsResult<{ message: string }>> => {
     try {
-      const ctx = await requireRole("owner", "manager");
+      const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
       const current = await q.getBusiness(businessId);
       if (!current) return { ok: false, status: 404, error: "Business not found." };
@@ -654,6 +725,7 @@ export const getOnboardingNudgeFn = createServerFn({ method: "GET" }).handler(
       configuredHours,
       prefs,
       prefsTouched: typeof settings.notificationPrefsSavedAt === "string",
+      emergencyTouched: typeof settings.emergencyPrefsSavedAt === "string",
     });
     const state = onboardingState(ctx.business, done);
     return {

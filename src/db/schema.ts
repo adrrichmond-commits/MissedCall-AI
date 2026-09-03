@@ -41,13 +41,18 @@ export type ConversationStatus = 'active' | 'awaiting_customer' | 'booked' | 'cl
 export type MessageDirection = 'inbound' | 'outbound';
 export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed';
 
+/**
+ * Phase 2 request-driven lifecycle (migration 006 — text + CHECK, not a PG
+ * enum, so the set stays editable). AI/customer-initiated bookings are
+ * REQUESTS the business confirms; the old scheduled/in_progress/cancelled/
+ * no_show states are absorbed (scheduled->requested, in_progress->confirmed,
+ * cancelled/no_show->declined).
+ */
 export type AppointmentStatus =
-  | 'scheduled'
+  | 'requested'
   | 'confirmed'
-  | 'in_progress'
-  | 'completed'
-  | 'cancelled'
-  | 'no_show';
+  | 'declined'
+  | 'completed';
 
 export type ServiceAreaKind = 'zip' | 'city';
 

@@ -55,7 +55,11 @@ function DashboardPage() {
           label="Upcoming appointments"
           value={data.metrics.upcomingAppointments}
           tone="green"
-          hint="Scheduled from now on"
+          hint={
+            data.metrics.upcomingAppointments > 0
+              ? data.metrics.confirmedAppointments + " confirmed - " + data.metrics.requestedAppointments + " requested"
+              : "Requested and confirmed from now on"
+          }
           href="/appointments"
         />
         <MetricCard

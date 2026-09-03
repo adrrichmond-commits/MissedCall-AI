@@ -6,6 +6,7 @@
  * lookup by hash) — those are scoped by the token/user itself, not the caller's
  * business, and are used only by the auth layer.
  */
+import { TRIAL_DAYS } from "../../lib/pricing";
 import type {
   Business,
   BusinessPlan,
@@ -317,6 +318,10 @@ export async function markEmailVerified(tokenHash: string): Promise<void> {
  * either both rows exist or neither does. (The Neon driver's `transaction()`
  * only accepts non-interactive arrays, so an atomic CTE is the correct
  * primitive here — same guarantee, one round trip.)
+ *
+ * The 14-day trial (TRIAL_DAYS from src/lib/pricing.ts — never hard-coded)
+ * starts at signup: plan='trial' and trial_ends_at = now() + 14 days, which
+ * drives the app-shell banner and the expired-trial read-only gate.
  */
 export async function createBusinessWithOwner(input: {
   businessName: string;
@@ -328,8 +333,8 @@ export async function createBusinessWithOwner(input: {
   const db = sql();
   const rows = await db`
     WITH biz AS (
-      INSERT INTO businesses (name)
-      VALUES (${input.businessName})
+      INSERT INTO businesses (name, plan, trial_ends_at)
+      VALUES (${input.businessName}, 'trial', now() + make_interval(days => ${TRIAL_DAYS}::int))
       RETURNING *
     ), usr AS (
       INSERT INTO users (business_id, email, full_name, role, password_hash)
