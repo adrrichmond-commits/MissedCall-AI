@@ -1,6 +1,16 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { getSettingsFn, seedServicesFromDefaultsFn, skipOnboardingFn, updateBusinessInfoFn } from "~/lib/server/settingsFns";
+import {
+  addServiceAreaFn,
+  getOnboardingNudgeFn,
+  getSettingsFn,
+  removeServiceAreaFn,
+  saveBusinessHoursFn,
+  saveNotificationPrefsFn,
+  seedServicesFromDefaultsFn,
+  skipOnboardingFn,
+  updateBusinessInfoFn,
+} from "~/lib/server/settingsFns";
 import { PageHeader, PageLoading, ErrorState } from "~/components/app/pageStates";
 import { Field, TextInput } from "~/components/ui/Form";
 import { Button } from "~/components/ui/Button";
@@ -20,6 +30,42 @@ const STEP_LABELS = [
   "Notifications",
   "Review",
 ] as const;
+
+/** dayOfWeek -> label, Monday-first (matches DB 0=Mon..6=Sun convention). */
+const DAY_LABELS: Record<number, string> = {
+  0: "Monday",
+  1: "Tuesday",
+  2: "Wednesday",
+  3: "Thursday",
+  4: "Friday",
+  5: "Saturday",
+  6: "Sunday",
+};
+
+/** DB row order for the 7-day week, Monday-first. */
+const BUSINESS_DAYS = [0, 1, 2, 3, 4, 5, 6] as const;
+
+/** The four notification switches offered in onboarding (settings.tsx uses the same keys). */
+const NOTIFICATION_PREF_KEYS = [
+  { key: "onMissedCallSms", label: "Text me when a missed call is captured" },
+  { key: "onNewLeadEmail", label: "Email me when a new lead comes in" },
+  { key: "dailySummaryEmail", label: "Send a daily summary email" },
+  { key: "weeklySummaryEmail", label: "Send a weekly summary email" },
+] as const;
+
+/** Honest note: prefs save now, delivery waits for the Phase 2 messaging provider. */
+const PREFS_DELIVERY_NOTE =
+  "Your choices are saved now. Email/SMS delivery switches on when the messaging provider is connected (Phase 2) - nothing is sent until then.";
+
+const TIME_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+
+type DayHours = { isOpen: boolean; opensAt: string; closesAt: string };
+
+type AreaChip = { id: string; kind: string; value: string; state: string | null };
+
+function toAreaChips(list: SettingsView["serviceAreas"]): AreaChip[] {
+  return list.map((a) => ({ id: a.id, kind: a.kind, value: a.value, state: a.state ?? null }));
+}
 
 export const Route = createFileRoute("/_app/onboarding")({
   loader: async () => {
@@ -124,7 +170,10 @@ function OnboardingPage() {
 
       {step === 1 ? <CompanyInfoStep view={data} onDone={() => setStep(2)} /> : null}
       {step === 2 ? <ServicesStep view={data} onBack={() => setStep(1)} onDone={() => setStep(3)} /> : null}
-      {step >= 3 ? <PlaceholderStep step={step} onBack={() => setStep(step - 1)} onDone={() => setStep(step + 1)} /> : null}
+      {step === 3 ? <HoursStep view={data} onBack={() => setStep(2)} onDone={() => setStep(4)} /> : null}
+      {step === 4 ? <AreasStep view={data} onBack={() => setStep(3)} onDone={() => setStep(5)} /> : null}
+      {step === 5 ? <PrefsStep view={data} onBack={() => setStep(4)} onDone={() => setStep(6)} /> : null}
+      {step === 6 ? <ReviewStep view={data} onBack={() => setStep(5)} /> : null}
 
       <div className="mt-6 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
         <SaveFeedback state={skip} />
@@ -350,27 +399,505 @@ function ServicesStep({
 }
 
 // ---------------------------------------------------------------------------
-// Steps 3-6: placeholders (built in later parts of this task)
+// Step 3: business hours (7-day rows, mirrors settings.tsx HoursSection shape)
 // ---------------------------------------------------------------------------
-function PlaceholderStep({
-  step,
+function HoursStep({
+  view,
   onBack,
   onDone,
 }: {
-  step: number;
+  view: SettingsView;
   onBack: () => void;
   onDone: () => void;
 }) {
-  const label = STEP_LABELS[step - 1];
+  const canEdit = view.canEdit;
+
+  const initial = (): Record<number, DayHours> => {
+    const out: Record<number, DayHours> = {};
+    for (const d of BUSINESS_DAYS) {
+      const row = view.hours.find((h) => h.dayOfWeek === d);
+      out[d] = {
+        isOpen: row?.isOpen ?? false,
+        opensAt: row?.opensAt ?? "08:00",
+        closesAt: row?.closesAt ?? "17:00",
+      };
+    }
+    return out;
+  };
+
+  const [days, setDays] = useState<Record<number, DayHours>>(initial);
+  const [errors, setErrors] = useState<Record<number, string>>({});
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const setDay = (d: number, patch: Partial<DayHours>) => {
+    setDays((prev) => ({ ...prev, [d]: { ...prev[d], ...patch } }));
+  };
+
+  const clientValidate = (): boolean => {
+    const errs: Record<number, string> = {};
+    for (const d of BUSINESS_DAYS) {
+      const row = days[d];
+      if (!row.isOpen) continue;
+      if (!TIME_RE.test(row.opensAt) || !TIME_RE.test(row.closesAt)) {
+        errs[d] = "Open days need both times in HH:MM (24-hour) format.";
+      } else if (row.opensAt >= row.closesAt) {
+        errs[d] = "Opening time must be earlier than closing time.";
+      }
+    }
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const onContinue = async () => {
+    if (!clientValidate()) return;
+    setSave({ kind: "saving" });
+    const res = await saveBusinessHoursFn({
+      data: {
+        days: BUSINESS_DAYS.map((d) => ({
+          dayOfWeek: d,
+          isOpen: days[d].isOpen,
+          opensAt: days[d].opensAt,
+          closesAt: days[d].closesAt,
+        })),
+      },
+    });
+    if (res.ok) {
+      setSave({ kind: "saved", message: res.data.message });
+      onDone();
+    } else {
+      setSave({ kind: "error", message: res.error });
+    }
+  };
+
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">{label}</h2>
-      <p className="mt-1 text-sm text-slate-600">Coming in next step.</p>
-      <div className="mt-5 flex items-center justify-end gap-2">
-        <Button variant="ghost" onClick={onBack}>
-          Back
-        </Button>
-        <Button onClick={onDone}>Continue</Button>
+      <h2 className="text-base font-semibold text-slate-900">Business hours</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        When customers can reach you. Unchecked days are closed. You can change this anytime in Settings.
+      </p>
+      <fieldset disabled={!canEdit} className="mt-4">
+        <legend className="sr-only">Business hours</legend>
+        <ul className="space-y-2">
+          {BUSINESS_DAYS.map((d) => (
+            <li key={d} className="rounded-xl border border-slate-200 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex min-w-[10rem] flex-1 cursor-pointer items-center gap-3">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
+                    checked={days[d].isOpen}
+                    onChange={(e) => setDay(d, { isOpen: e.target.checked })}
+                  />
+                  <span className="text-sm font-medium text-slate-900">{DAY_LABELS[d]}</span>
+                </label>
+                {days[d].isOpen ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="08:00"
+                      aria-label={`${DAY_LABELS[d]} opening time`}
+                      className={`${inputCls} w-24`}
+                      value={days[d].opensAt}
+                      onChange={(e) => setDay(d, { opensAt: e.target.value })}
+                    />
+                    <span className="text-sm text-slate-500">–</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="17:00"
+                      aria-label={`${DAY_LABELS[d]} closing time`}
+                      className={`${inputCls} w-24`}
+                      value={days[d].closesAt}
+                      onChange={(e) => setDay(d, { closesAt: e.target.value })}
+                    />
+                  </div>
+                ) : (
+                  <span className="text-sm text-slate-400">Closed</span>
+                )}
+              </div>
+              <FieldError msg={errors[d]} />
+            </li>
+          ))}
+        </ul>
+      </fieldset>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <SaveFeedback state={save} />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving"}>
+            Back
+          </Button>
+          <Button onClick={onContinue} disabled={!canEdit || save.kind === "saving"}>
+            {save.kind === "saving" ? "Saving…" : "Continue"}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: service areas (removable chips + add form)
+// ---------------------------------------------------------------------------
+function AreasStep({
+  view,
+  onBack,
+  onDone,
+}: {
+  view: SettingsView;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  const canEdit = view.canEdit;
+  const [areas, setAreas] = useState<AreaChip[]>(() => toAreaChips(view.serviceAreas));
+  const [kind, setKind] = useState<"zip" | "city">("zip");
+  const [value, setValue] = useState("");
+  const [stateCode, setStateCode] = useState("");
+  const [addError, setAddError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const onAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddError("");
+    const trimmed = value.trim();
+    if (kind === "zip" && !/^[0-9]{5}$/.test(trimmed)) {
+      setAddError("ZIP must be exactly 5 digits.");
+      return;
+    }
+    if (kind === "city" && trimmed.length < 2) {
+      setAddError("Enter a city name.");
+      return;
+    }
+    if (kind === "city" && stateCode && !US_STATES.includes(stateCode as (typeof US_STATES)[number])) {
+      setAddError("Pick a valid state.");
+      return;
+    }
+    setBusy(true);
+    const res = await addServiceAreaFn({ data: { kind, value: trimmed, state: stateCode || undefined } });
+    if (res.ok) {
+      // Optimistic chip with a temp id, then reconcile with the server's list for real ids.
+      setAreas((prev) => [
+        ...prev,
+        { id: `tmp-${Date.now()}`, kind, value: trimmed, state: stateCode || null },
+      ]);
+      setValue("");
+      setStateCode("");
+      const fresh = await getSettingsFn();
+      if (fresh.ok) setAreas(toAreaChips(fresh.data.serviceAreas));
+    } else {
+      setAddError(res.error);
+    }
+    setBusy(false);
+  };
+
+  const onRemove = async (id: string) => {
+    if (!canEdit || busy) return;
+    setBusy(true);
+    const prev = areas;
+    setAreas((cur) => cur.filter((a) => a.id !== id));
+    const res = await removeServiceAreaFn({ data: { id } });
+    if (!res.ok) {
+      setAreas(prev);
+      setSave({ kind: "error", message: res.error });
+    }
+    setBusy(false);
+  };
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Service areas</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        Where you take jobs — ZIP codes or cities. You can change this anytime in Settings.
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {areas.length === 0 ? (
+          <p className="text-sm text-slate-500">No areas yet — add at least one below.</p>
+        ) : (
+          areas.map((a) => {
+            const chipLabel = a.kind === "zip" ? a.value : a.value + (a.state ? `, ${a.state}` : "");
+            return (
+              <span
+                key={a.id}
+                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 py-1.5 pl-3.5 pr-2 text-sm text-slate-800"
+              >
+                {chipLabel}
+                <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  {a.kind}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRemove(a.id)}
+                  disabled={!canEdit || busy}
+                  aria-label={"Remove " + chipLabel}
+                  className="flex h-5 w-5 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700 disabled:opacity-40"
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })
+        )}
+      </div>
+
+      <form onSubmit={onAdd} className="mt-4 flex flex-wrap items-start gap-3">
+        <div className="w-28">
+          <label htmlFor="onb-area-kind" className="mb-1.5 block text-sm font-medium text-slate-700">
+            Kind
+          </label>
+          <select
+            id="onb-area-kind"
+            className={inputCls}
+            value={kind}
+            disabled={!canEdit}
+            onChange={(e) => {
+              setKind(e.target.value === "city" ? "city" : "zip");
+              setAddError("");
+            }}
+          >
+            <option value="zip">ZIP code</option>
+            <option value="city">City</option>
+          </select>
+        </div>
+        <div className="w-44">
+          <label htmlFor="onb-area-value" className="mb-1.5 block text-sm font-medium text-slate-700">
+            {kind === "zip" ? "ZIP code" : "City"}
+          </label>
+          <TextInput
+            id="onb-area-value"
+            value={value}
+            disabled={!canEdit}
+            placeholder={kind === "zip" ? "12345" : "Austin"}
+            onChange={(v) => {
+              setValue(v);
+              setAddError("");
+            }}
+          />
+        </div>
+        {kind === "city" ? (
+          <div className="w-28">
+            <label htmlFor="onb-area-state" className="mb-1.5 block text-sm font-medium text-slate-700">
+              State <span className="font-normal text-slate-400">(optional)</span>
+            </label>
+            <select
+              id="onb-area-state"
+              className={inputCls}
+              value={stateCode}
+              disabled={!canEdit}
+              onChange={(e) => setStateCode(e.target.value)}
+            >
+              <option value="">—</option>
+              {US_STATES.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        <div className="pt-[1.65rem]">
+          <Button type="submit" disabled={!canEdit || busy}>
+            Add
+          </Button>
+        </div>
+      </form>
+      <FieldError msg={addError} />
+
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <SaveFeedback state={save} />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack} disabled={busy}>
+            Back
+          </Button>
+          <Button onClick={onDone} disabled={busy}>
+            Continue
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 5: notification preferences (4 checkboxes + honest delivery note)
+// ---------------------------------------------------------------------------
+function PrefsStep({
+  view,
+  onBack,
+  onDone,
+}: {
+  view: SettingsView;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  const canEdit = view.canEdit;
+  const [prefs, setPrefs] = useState({
+    onMissedCallSms: view.notificationPrefs.onMissedCallSms,
+    onNewLeadEmail: view.notificationPrefs.onNewLeadEmail,
+    dailySummaryEmail: view.notificationPrefs.dailySummaryEmail,
+    weeklySummaryEmail: view.notificationPrefs.weeklySummaryEmail,
+  });
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const onContinue = async () => {
+    setSave({ kind: "saving" });
+    const res = await saveNotificationPrefsFn({ data: prefs });
+    if (res.ok) {
+      setSave({ kind: "saved", message: "Notification preferences saved." });
+      onDone();
+    } else {
+      setSave({ kind: "error", message: res.error });
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Notification preferences</h2>
+      <p className="mt-1 text-sm text-slate-600">Choose how you want to be kept in the loop.</p>
+      <fieldset disabled={!canEdit} className="mt-4">
+        <legend className="sr-only">Notification preferences</legend>
+        <ul className="space-y-2">
+          {NOTIFICATION_PREF_KEYS.map((p) => (
+            <li key={p.key}>
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 transition-colors hover:bg-slate-50 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
+                  checked={prefs[p.key]}
+                  onChange={(e) => setPrefs((prev) => ({ ...prev, [p.key]: e.target.checked }))}
+                />
+                <span className="text-sm font-medium text-slate-900">{p.label}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      </fieldset>
+      <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+        {PREFS_DELIVERY_NOTE}
+      </p>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <SaveFeedback state={save} />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving"}>
+            Back
+          </Button>
+          <Button onClick={onContinue} disabled={!canEdit || save.kind === "saving"}>
+            {save.kind === "saving" ? "Saving…" : "Continue"}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 6: review (read-only summary) + finish (derived from onboarding nudge)
+// ---------------------------------------------------------------------------
+function formatHoursSummary(hours: SettingsView["hours"]): string {
+  const open = BUSINESS_DAYS.filter((d) => hours.find((h) => h.dayOfWeek === d)?.isOpen);
+  if (open.length === 0) return "No open days yet";
+  const segs: string[] = [];
+  let i = 0;
+  while (i < open.length) {
+    let j = i;
+    while (j + 1 < open.length && open[j + 1] === open[j] + 1) j += 1;
+    segs.push(
+      open[i] === open[j]
+        ? DAY_LABELS[open[i]].slice(0, 3)
+        : DAY_LABELS[open[i]].slice(0, 3) + "–" + DAY_LABELS[open[j]].slice(0, 3),
+    );
+    i = j + 1;
+  }
+  const times = open
+    .map((d) => hours.find((h) => h.dayOfWeek === d))
+    .filter((h): h is NonNullable<typeof h> => Boolean(h));
+  const first = times[0];
+  const sameTimes = times.every((h) => h.opensAt === first.opensAt && h.closesAt === first.closesAt);
+  return sameTimes
+    ? segs.join(", ") + " " + first.opensAt + "–" + first.closesAt
+    : segs.join(", ") + " (varies by day — see Settings)";
+}
+
+function ReviewStep({ view, onBack }: { view: SettingsView; onBack: () => void }) {
+  const navigate = useNavigate();
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const onFinish = async () => {
+    setSave({ kind: "saving" });
+    // getOnboardingNudgeFn resolves to the nudge object itself (or null on failure) — no result wrapper.
+    const nudge = await getOnboardingNudgeFn();
+    if (nudge && nudge.percent === 100) {
+      await navigate({ to: "/dashboard" });
+    } else if (nudge) {
+      // resumeStep is an index into the wizard's steps array (-1 = none), not a 1-based step number.
+      const idx = typeof nudge.resumeStep === "number" ? nudge.resumeStep : -1;
+      const nextUp = idx >= 1 && idx < STEP_LABELS.length ? "Next up: " + STEP_LABELS[idx] + ". " : "";
+      const missing: string[] = [];
+      if (!view.business.name) missing.push("Company info");
+      if (view.services.length === 0) missing.push("Services");
+      if (
+        view.hours.length < BUSINESS_DAYS.length ||
+        BUSINESS_DAYS.every((d) => !view.hours.find((h) => h.dayOfWeek === d)?.isOpen)
+      ) {
+        missing.push("Business hours (at least one open day)");
+      }
+      if (view.serviceAreas.length === 0) missing.push("Service areas");
+      if (!view.notificationPrefs.onMissedCallSms && !view.notificationPrefs.onNewLeadEmail) {
+        missing.push("Notifications (turn at least one on)");
+      }
+      const msg =
+        nextUp +
+        "Not finished yet" +
+        (missing.length > 0 ? ": " + missing.join(", ") : ".");
+      setSave({ kind: "error", message: msg });
+    } else {
+      setSave({ kind: "error", message: "Couldn't verify setup status. Please try again." });
+    }
+  };
+
+  const b = view.business;
+  const summary: Array<[string, string]> = [
+    [
+      "Business",
+      b.name +
+        (b.phone ? " · " + b.phone : "") +
+        (b.city ? " · " + b.city + (b.state ? ", " + b.state : "") : ""),
+    ],
+    ["Time zone", b.timezone],
+    ["Services", String(view.services.length) + " selected"],
+    ["Hours", formatHoursSummary(view.hours)],
+    ["Service areas", String(view.serviceAreas.length) + " added"],
+    [
+      "Notifications",
+      NOTIFICATION_PREF_KEYS.filter((p) => view.notificationPrefs[p.key])
+        .map((p) => p.label)
+        .join(", ") || "None on",
+    ],
+  ];
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h2 className="text-base font-semibold text-slate-900">Review &amp; finish</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        A quick look at what you've set up. Everything stays editable in Settings.
+      </p>
+      <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {summary.map(([label, val]) => (
+          <div key={label} className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
+            <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
+            <dd className="text-sm text-slate-900">{val}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <SaveFeedback state={save} />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving"}>
+            Back
+          </Button>
+          <Button onClick={onFinish} disabled={save.kind === "saving"}>
+            {save.kind === "saving" ? "Checking…" : "Finish — go to dashboard"}
+          </Button>
+        </div>
       </div>
     </section>
   );
