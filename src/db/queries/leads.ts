@@ -185,7 +185,7 @@ export async function missedCallRecoveryStats(
   const rows = await db`
     SELECT
       count(*) AS missed_calls,
-      count(c.id) AS recovered,
+      count(c.lead_id) AS recovered,
       count(*) FILTER (WHERE l.status IN ('booked', 'completed')) AS booked
     FROM leads l
     LEFT JOIN (
@@ -194,12 +194,12 @@ export async function missedCallRecoveryStats(
     ) c ON c.lead_id = l.id
     WHERE l.business_id = ${businessId} AND l.source = 'missed_call'`;
   const r = rows[0] as unknown as {
-    missed_calls: unknown;
+    missedCalls: unknown;
     recovered: unknown;
     booked: unknown;
   };
   return {
-    missedCalls: Number(r.missed_calls),
+    missedCalls: Number(r.missedCalls),
     recovered: Number(r.recovered),
     booked: Number(r.booked),
   };
