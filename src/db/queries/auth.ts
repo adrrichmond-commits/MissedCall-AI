@@ -74,6 +74,27 @@ export async function updateBusinessPlan(
   return (rows[0] as unknown as Business | undefined) ?? null;
 }
 
+/**
+ * Phase 1 billing: subscription state columns (migration 004). Writes go
+ * through typed keys — never raw client input — per the isolation rules.
+ */
+export async function setSubscriptionStatus(
+  businessId: string,
+  status: string,
+): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db`UPDATE businesses SET subscription_status = ${status} WHERE id = ${businessId} RETURNING *`;
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
+
+export async function clearSubscriptionStatus(businessId: string): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db`UPDATE businesses SET subscription_status = NULL WHERE id = ${businessId} RETURNING *`;
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Users
 // ---------------------------------------------------------------------------
