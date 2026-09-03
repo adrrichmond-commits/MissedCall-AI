@@ -101,6 +101,39 @@ function AnalyticsPage() {
         description="Straightforward aggregates over your leads, conversations, and appointments — no invented trends."
       />
 
+      {/* Primary value metric: missed-call recovery funnel (all real rows) */}
+      <section  className="rounded-xl border border-brand-200 bg-white p-5" aria-label="Missed calls recovered">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-900">Missed calls recovered</h2>
+          <p className="text-xs text-slate-400">All time</p>
+        </div>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Missed calls captured as leads, engaged by the text-back assistant, and won as jobs.
+        </p>
+        {data.recovery.missedCalls === 0 ? (
+          <p className="mt-4 rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+            No missed-call leads yet — recovery tracking starts with your first captured missed call.
+          </p>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-end gap-x-8 gap-y-4">
+            <div>
+              <p className="text-3xl font-bold text-slate-900">{data.recovery.missedCalls}</p>
+              <p className="mt-0.5 text-xs font-medium text-slate-500">missed calls captured</p>
+            </div>
+            <span className="pb-4 text-lg text-slate-400" aria-hidden="true">→</span>
+            <div>
+              <p className="text-3xl font-bold text-aqua-700">{data.recovery.recovered}</p>
+              <p className="mt-0.5 text-xs font-medium text-slate-500">recovered by SMS</p>
+            </div>
+            <span className="pb-4 text-lg text-slate-400" aria-hidden="true">→</span>
+            <div>
+              <p className="text-3xl font-bold text-green-700">{data.recovery.booked}</p>
+              <p className="mt-0.5 text-xs font-medium text-slate-500">booked jobs</p>
+            </div>
+          </div>
+        )}
+      </section>
+
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-5">
           <p className="text-sm font-medium text-slate-600">Total leads</p>

@@ -1,12 +1,20 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { getLeadsFn } from "~/lib/server/appFns";
-import { EmptyState, ErrorState, PageHeader, PageLoading, StatusBadge } from "~/components/app/pageStates";
+import {
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageLoading,
+  PriorityBadge,
+  StatusBadge,
+} from "~/components/app/pageStates";
 import { formatDate, formatMoney, labelEnum } from "~/lib/format";
 
 type LeadSearch = {
   status?: string;
   source?: string;
+  priority?: string;
   search?: string;
   page?: number;
 };
@@ -15,17 +23,19 @@ export const Route = createFileRoute("/_app/leads/")({
   validateSearch: (s: Record<string, unknown>): LeadSearch => ({
     status: typeof s.status === "string" ? s.status : undefined,
     source: typeof s.source === "string" ? s.source : undefined,
+    priority: typeof s.priority === "string" ? s.priority : undefined,
     search: typeof s.search === "string" ? s.search : undefined,
     page: typeof s.page === "number" ? s.page : undefined,
   }),
-  loaderDeps: ({ search }) => [search.status, search.source, search.search, search.page],
+  loaderDeps: ({ search }) => [search.status, search.source, search.priority, search.search, search.page],
   loader: async ({ deps }) => {
     const res = await getLeadsFn({
       data: {
         status: deps[0] as string | undefined,
         source: deps[1] as string | undefined,
-        search: deps[2] as string | undefined,
-        page: deps[3] as number | undefined,
+        priority: deps[2] as string | undefined,
+        search: deps[3] as string | undefined,
+        page: deps[4] as number | undefined,
       },
     });
     if (!res.ok) throw new Error(res.error);
@@ -38,7 +48,8 @@ export const Route = createFileRoute("/_app/leads/")({
   component: LeadsPage,
 });
 
-const STATUS_OPTS = ["new", "contacted", "qualified", "converted", "lost"] as const;
+const STATUS_OPTS = ["new", "contacted", "booked", "completed", "lost"] as const;
+const PRIORITY_OPTS = ["emergency", "high", "normal"] as const;
 const SOURCE_OPTS = ["missed_call", "web_form", "referral", "repeat_customer", "other"] as const;
 
 function LeadsPage() {
@@ -109,14 +120,27 @@ function LeadsPage() {
             </option>
           ))}
         </select>
+        <select
+          aria-label="Filter by priority"
+          value={search.priority ?? ""}
+          onChange={(e) => updateSearch({ priority: e.target.value || undefined })}
+          className={selectCls}
+        >
+          <option value="">All priorities</option>
+          {PRIORITY_OPTS.map((p) => (
+            <option key={p} value={p}>
+              {labelEnum(p)}
+            </option>
+          ))}
+        </select>
       </form>
 
       {data.leads.length === 0 ? (
         <EmptyState
-          title={search.search || search.status || search.source ? "No leads match these filters" : "No leads yet"}
+          title={search.search || search.status || search.source || search.priority ? "No leads match these filters" : "No leads yet"}
           description={
-            search.search || search.status || search.source
-              ? "Try clearing the search or choosing a different status or source."
+            search.search || search.status || search.source || search.priority
+              ? "Try clearing the search or choosing a different status, priority, or source."
               : "Leads appear here as soon as your first missed call is captured."
           }
         />
@@ -132,7 +156,10 @@ function LeadsPage() {
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-sm font-semibold text-slate-900">{l.contactName}</p>
-                  <StatusBadge status={l.status} />
+                  <span className="flex items-center gap-1.5">
+                    <PriorityBadge priority={l.priority} />
+                    <StatusBadge status={l.status} />
+                  </span>
                 </div>
                 <p className="mt-1 text-sm text-slate-600">{l.serviceNeed}</p>
                 <p className="mt-1 text-xs text-slate-400">
@@ -151,6 +178,7 @@ function LeadsPage() {
                   <th className="px-4 py-3 font-semibold">Contact</th>
                   <th className="px-4 py-3 font-semibold">Service need</th>
                   <th className="px-4 py-3 font-semibold">Source</th>
+                  <th className="px-4 py-3 font-semibold">Priority</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 text-right font-semibold">Est. value</th>
                   <th className="px-4 py-3 text-right font-semibold">
@@ -183,6 +211,9 @@ function LeadsPage() {
                       ) : null}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{labelEnum(l.source)}</td>
+                    <td className="px-4 py-3">
+                      <PriorityBadge priority={l.priority} />
+                    </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={l.status} />
                     </td>

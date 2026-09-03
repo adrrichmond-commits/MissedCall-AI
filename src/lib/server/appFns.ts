@@ -9,12 +9,14 @@
  * queries; Dates are coerced to ISO strings before crossing the wire.
  */
 import { createServerFn } from "@tanstack/react-start";
-import { requireAuth } from "~/lib/server/auth.server";
+import { requireAuth, requireRole } from "~/lib/server/auth.server";
+import type { AuthContext } from "~/lib/server/auth";
 import { authErrorToResult } from "~/lib/server/sessionFns";
 import * as q from "~/db/queries";
 
-const LEAD_STATUSES = ["new", "contacted", "qualified", "converted", "lost"] as const;
+const LEAD_STATUSES = ["new", "contacted", "booked", "completed", "lost"] as const;
 const LEAD_SOURCES = ["missed_call", "web_form", "referral", "repeat_customer", "other"] as const;
+const LEAD_PRIORITIES = ["emergency", "high", "normal"] as const;
 const CONVERSATION_STATUSES = ["active", "awaiting_customer", "booked", "closed"] as const;
 
 function pickEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
@@ -51,8 +53,10 @@ export interface DashboardData {
     newLeadsThisWeek: number;
     openConversations: number;
     upcomingAppointments: number;
-    /** converted / (converted + lost) — a conversion proxy, not a promise. */
+    /** won / (won + lost) — a conversion proxy, not a promise. */
     conversionRate: number | null;
+    /** Open (not booked/completed/lost) leads marked priority='emergency'. */
+    emergencyLeads: number;
   };
   recentLeads: {
     id: string;
@@ -60,6 +64,7 @@ export interface DashboardData {
     contactPhone: string;
     serviceNeed: string;
     urgency: string;
+    priority: string;
     status: string;
     source: string;
     createdAt: string;
@@ -80,12 +85,13 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
       const ctx = await requireAuth();
       const businessId = ctx.business.id;
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const [newLeadsThisWeek, convoCounts, upcoming, leadStatusCounts, recentLeads, recentAppointments] =
+      const [newLeadsThisWeek, convoCounts, upcoming, leadStatusCounts, priorityCounts, recentLeads, recentAppointments] =
         await Promise.all([
           q.countLeadsCreatedSince(businessId, weekAgo),
           q.countConversationsByStatus(businessId),
           q.countUpcoming(businessId),
           q.countLeadsByStatus(businessId),
+          q.countLeadsByPriority(businessId),
           q.listLeads(businessId, {}, { limit: 6, order: "desc" }),
           q.listAppointments(businessId, {}, { limit: 5, order: "asc" }),
         ]);
@@ -98,9 +104,10 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
             openConversations: convoCounts.active + convoCounts.awaiting_customer,
             upcomingAppointments: upcoming,
             conversionRate:
-              leadStatusCounts.converted + leadStatusCounts.lost > 0
-                ? leadStatusCounts.converted / (leadStatusCounts.converted + leadStatusCounts.lost)
+              leadStatusCounts.completed + leadStatusCounts.lost > 0
+                ? leadStatusCounts.completed / (leadStatusCounts.completed + leadStatusCounts.lost)
                 : null,
+            emergencyLeads: priorityCounts.emergency,
           },
           recentLeads: recentLeads.map((l) => ({
             id: l.id,
@@ -108,6 +115,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
             contactPhone: l.contactPhone,
             serviceNeed: l.serviceNeed,
             urgency: l.urgency,
+            priority: l.priority,
             status: l.status,
             source: l.source,
             createdAt: iso(l.createdAt) ?? "",
@@ -139,6 +147,7 @@ export interface LeadsPageData {
     contactPhone: string;
     serviceNeed: string;
     urgency: string;
+    priority: string;
     status: string;
     source: string;
     estimatedValueCents: number | null;
@@ -151,7 +160,7 @@ export interface LeadsPageData {
 }
 
 export const getLeadsFn = createServerFn({ method: "GET" })
-  .validator((d: unknown) => d as { status?: unknown; source?: unknown; search?: unknown; page?: unknown })
+  .validator((d: unknown) => d as { status?: unknown; source?: unknown; priority?: unknown; search?: unknown; page?: unknown })
   .handler(async ({ data }): Promise<AppResult<LeadsPageData>> => {
     try {
       const ctx = await requireAuth();
@@ -160,6 +169,7 @@ export const getLeadsFn = createServerFn({ method: "GET" })
       const filters = {
         status: pickEnum(data?.status, LEAD_STATUSES),
         source: pickEnum(data?.source, LEAD_SOURCES),
+        priority: pickEnum(data?.priority, LEAD_PRIORITIES),
         search: pickSearch(data?.search),
       };
       const leads = await q.listLeads(businessId, filters, { limit: perPage, offset, order: "desc" });
@@ -179,6 +189,7 @@ export const getLeadsFn = createServerFn({ method: "GET" })
             contactPhone: l.contactPhone,
             serviceNeed: l.serviceNeed,
             urgency: l.urgency,
+            priority: l.priority,
             status: l.status,
             source: l.source,
             estimatedValueCents: l.estimatedValueCents,
@@ -196,8 +207,11 @@ export interface LeadDetailData {
   id: string;
   source: string;
   status: string;
+  priority: string;
   serviceNeed: string;
   urgency: string;
+  /** True when the viewer's role may change the lifecycle status. */
+  canEditStatus: boolean;
   contactName: string;
   contactPhone: string;
   contactEmail: string | null;
@@ -232,8 +246,10 @@ export const getLeadFn = createServerFn({ method: "GET" })
           id: lead.id,
           source: lead.source,
           status: lead.status,
+          priority: lead.priority,
           serviceNeed: lead.serviceNeed,
           urgency: lead.urgency,
+          canEditStatus: ctx.role === "owner" || ctx.role === "manager",
           contactName: lead.contactName,
           contactPhone: lead.contactPhone,
           contactEmail: lead.contactEmail,
@@ -256,6 +272,49 @@ export const getLeadFn = createServerFn({ method: "GET" })
       return authErrorToResult(e);
     }
   });
+
+/**
+ * Write: change a lead's lifecycle status. Owner + manager only (employee is
+ * read-only, matching the settings pattern); the value is whitelisted against
+ * the Phase 2 lifecycle and the WHERE clause is business-scoped, so a lead id
+ * from another business is a 404.
+ */
+export const updateLeadStatusFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { leadId?: unknown; status?: unknown })
+  .handler(
+    async ({
+      data,
+    }): Promise<AppResult<{ leadId: string; status: string; convertedAt: string | null }>> => {
+      try {
+        const ctx: AuthContext = await requireRole("owner", "manager");
+        const businessId = ctx.business.id;
+        const leadId = typeof data?.leadId === "string" ? data.leadId.trim() : "";
+        const status = pickEnum(data?.status, LEAD_STATUSES);
+        if (!leadId) return { ok: false, status: 400, error: "Missing lead." };
+        if (!status) {
+          return {
+            ok: false,
+            status: 400,
+            error: "Unknown status. Choose new, contacted, booked, completed, or lost.",
+          };
+        }
+        const existing = await q.getLead(businessId, leadId);
+        if (!existing) return { ok: false, status: 404, error: "Lead not found." };
+        const updated = await q.updateLead(businessId, leadId, { status });
+        if (!updated) return { ok: false, status: 404, error: "Lead not found." };
+        return {
+          ok: true,
+          data: {
+            leadId: updated.id,
+            status: updated.status,
+            convertedAt: updated.convertedAt ? updated.convertedAt.toISOString() : null,
+          },
+        };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // Inbox (conversation list + thread)
@@ -442,6 +501,15 @@ export interface AnalyticsData {
   totalLeads: number;
   totalMessages: number;
   openPipelineValueCents: number;
+  /** Missed-call recovery funnel — real aggregates, never synthetic. */
+  recovery: {
+    /** Leads whose source is a captured missed call (all time). */
+    missedCalls: number;
+    /** Of those, leads that got a captured SMS conversation (recovered). */
+    recovered: number;
+    /** Of those, leads that were won (status booked/completed). */
+    booked: number;
+  };
 }
 
 export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
@@ -449,7 +517,7 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
     try {
       const ctx = await requireAuth();
       const businessId = ctx.business.id;
-      const [leadsByStatus, leadsBySource, appointmentsByWeekday, conversationsByStatus, totalMessages, pipeline] =
+      const [leadsByStatus, leadsBySource, appointmentsByWeekday, conversationsByStatus, totalMessages, pipeline, recovery] =
         await Promise.all([
           q.countLeadsByStatus(businessId),
           q.countLeadsBySource(businessId),
@@ -457,6 +525,7 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
           q.countConversationsByStatus(businessId),
           q.countMessages(businessId),
           q.sumOpenPipelineValue(businessId),
+          q.missedCallRecoveryStats(businessId),
         ]);
       const totalLeads = Object.values(leadsByStatus).reduce((a, b) => a + b, 0);
       return {
@@ -469,6 +538,7 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
           totalLeads,
           totalMessages,
           openPipelineValueCents: pipeline,
+          recovery,
         },
       };
     } catch (e) {
