@@ -6,10 +6,19 @@ import { AuthCard, FormError } from "~/components/auth/AuthCard";
 import { Field, TextInput } from "~/components/ui/Form";
 import { Button } from "~/components/ui/Button";
 
+// Seeded sample-data account (business: Rapid Rooter Plumbing). Used when the
+// login page is opened with ?demo=1 (from the public /demo walkthrough).
+const DEMO_EMAIL = "dana@rapidrooter.example.com";
+const DEMO_HINT =
+  "Demo mode — use password demo-password-1234 to explore with sample data.";
+
 export const Route = createFileRoute("/login")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    next: typeof search.next === "string" ? search.next : undefined,
-  }),
+  validateSearch: (search: Record<string, unknown>) => {
+    const out: { next?: string; demo?: boolean } = {};
+    if (typeof search.next === "string") out.next = search.next;
+    if (search.demo === "1") out.demo = true;
+    return out;
+  },
   beforeLoad: async () => {
     const session = await getSessionFn();
     if (session) throw redirect({ to: "/dashboard" });
@@ -18,6 +27,7 @@ export const Route = createFileRoute("/login")({
 });
 
 function Login() {
+  const { demo } = Route.useSearch();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -53,6 +63,11 @@ function Login() {
         </>
       }
     >
+      {demo && (
+        <div className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-inset ring-amber-600/20">
+          {DEMO_HINT}
+        </div>
+      )}
       <form onSubmit={onSubmit} className="space-y-4">
         <FormError message={error} />
         <Field label="Work email" htmlFor="email">
@@ -61,6 +76,7 @@ function Login() {
             name="email"
             type="email"
             placeholder="you@yourplumbingco.com"
+            defaultValue={demo ? DEMO_EMAIL : undefined}
             autoComplete="email"
             required
             autoFocus
