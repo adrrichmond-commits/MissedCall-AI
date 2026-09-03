@@ -28,21 +28,29 @@ export interface UpdateConversationInput {
 
 const FILTERABLE_STATUS: ConversationStatus[] = ["active", "awaiting_customer", "booked", "closed"];
 
+/**
+ * Build the WHERE clause for conversation reads. Every column is qualified with
+ * `alias` — `listConversationsWithPreview` joins `leads`, which also has
+ * `business_id` and `status`, and an unqualified `business_id` makes Postgres
+ * fail with "column reference is ambiguous".
+ */
 function conversationWhere(
   businessId: string,
   f: ConversationFilters,
+  alias: "c" | "conversations" = "conversations",
 ): { text: string; values: unknown[] } {
+  const col = (name: string): string => `${alias}.${name}`;
   const values: unknown[] = [businessId];
-  const clauses = ["business_id = $1"];
+  const clauses = [`${col("business_id")} = $1`];
   if (f.status && FILTERABLE_STATUS.includes(f.status)) {
     values.push(f.status);
-    clauses.push(`status = $${values.length}`);
+    clauses.push(`${col("status")} = ${"$"}${values.length}`);
   }
   if (f.search && f.search.trim()) {
     const like = `%${f.search.trim()}%`;
     values.push(like);
     const n = values.length;
-    clauses.push(`(customer_phone ILIKE $${n} OR summary ILIKE $${n})`);
+    clauses.push(`(${col("customer_phone")} ILIKE ${"$"}${n} OR ${col("summary")} ILIKE ${"$"}${n})`);
   }
   return { text: clauses.join(" AND "), values };
 }
@@ -178,7 +186,7 @@ export async function listConversationsWithPreview(
   assertServer();
   const { limit, offset, order } = listClause(opts);
   const dir = order === "asc" ? "ASC" : "DESC"; // whitelisted
-  const w = conversationWhere(businessId, filters);
+  const w = conversationWhere(businessId, filters, "c");
   const db = sql();
   const rows = await db.query(
     `SELECT c.*,
