@@ -60,7 +60,12 @@ export interface Business {
   timezone: string;
   /** Per-business configuration blob (notification prefs, etc). */
   settings: Record<string, unknown>;
+  /** Selected tier id: 'trial' until a plan is chosen, then 'starter' | 'pro'. */
   plan: BusinessPlan;
+  /** When the 14-day trial ends (null = no trial period recorded). */
+  trialEndsAt: Date | null;
+  /** Phase 1 placeholder state; Stripe lifecycle takes this over in Phase 2. */
+  subscriptionStatus: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
