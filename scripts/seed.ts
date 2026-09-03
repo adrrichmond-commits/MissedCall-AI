@@ -14,7 +14,8 @@
  *     runtime-agnostic node:crypto scrypt, so logins work under Node and Bun)
  *   - the global service_defaults catalog + the business's services
  *     (8 instantiated from defaults, 3 custom)
- *   - 25 leads across every lead_status/source, with realistic plumbing jobs
+ *   - 25 leads across the Phase 2 lifecycle (new/contacted/booked/completed/lost)
+ *     with priority (emergency/high/normal) and realistic plumbing jobs
  *   - 14 SMS conversations with message threads matching each lead
  *   - 10 appointments (5 past completed/cancelled/no-show, 1 in progress,
  *     4 upcoming)
@@ -111,7 +112,9 @@ const BUSINESS_HOURS = [
 
 interface LeadFixture {
   source: "missed_call" | "web_form" | "referral" | "repeat_customer";
-  status: "new" | "contacted" | "qualified" | "converted" | "lost";
+  status: "new" | "contacted" | "booked" | "completed" | "lost";
+  /** Phase 2 triage ranking: emergency = drop everything, high = today, normal = scheduled. */
+  priority: "emergency" | "high" | "normal";
   serviceNeed: string;
   urgency: "emergency" | "same_day" | "within_week" | "flexible";
   contactName: string;
@@ -130,6 +133,7 @@ const LEADS: LeadFixture[] = [
   // ---- new (6) — fresh missed calls from the last few days -----------------
   {
     source: "missed_call", status: "new", serviceNeed: "Water Heater Replacement", urgency: "same_day",
+    priority: "high",
     contactName: "Karen Dell'Aquila", contactPhone: "(512) 555-0114", contactEmail: null,
     contactAddress: "1908 Baylor St, Austin, TX 78703",
     description: "40-gal gas water heater is leaking from the tank; caller says water is spreading across the garage floor.",
@@ -137,6 +141,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "missed_call", status: "new", serviceNeed: "Drain Cleaning", urgency: "same_day",
+    priority: "high",
     contactName: "Robert Nguyen", contactPhone: "(512) 555-0155", contactEmail: "k.dell@example.com",
     contactAddress: "1204 E 12th St, Austin, TX 78702",
     description: "Kitchen sink completely backed up; running dishwasher makes it overflow.",
@@ -144,6 +149,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "missed_call", status: "new", serviceNeed: "Burst Pipe Repair", urgency: "emergency",
+    priority: "emergency",
     contactName: "Sam Okafor", contactPhone: "(512) 555-0162", contactEmail: null,
     contactAddress: "504 Chicon St, Austin, TX 78702",
     description: "Supply line burst under the bathroom sink overnight; water shut off at the main, needs repair today.",
@@ -152,6 +158,7 @@ const LEADS: LeadFixture[] = [
   {
     source: "web_form", status: "new", serviceNeed: "Sump Pump Installation",
     urgency: "within_week",
+    priority: "normal",
     contactName: "Priya Raman", contactPhone: "(512) 555-0178", contactEmail: "praman@example.com",
     contactAddress: "1205 Cullen Ave, Austin, TX 78757",
     description: "Finished basement floods during heavy rain; wants a sump pump with battery backup quoted.",
@@ -159,6 +166,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "missed_call", status: "new", serviceNeed: "Toilet Repair", urgency: "flexible",
+    priority: "normal",
     contactName: "Walter Simmons", contactPhone: "(512) 555-0183", contactEmail: null,
     contactAddress: "3010 Harris Park Ave, Austin, TX 78705",
     description: "Toilet runs constantly and the flapper looks warped; handy owner, wants a quote on parts + labor.",
@@ -167,16 +175,18 @@ const LEADS: LeadFixture[] = [
   {
     source: "missed_call", status: "new", serviceNeed: "Garbage Disposal Replacement",
     urgency: "flexible",
+    priority: "normal",
     contactName: "Bethany Cruz", contactPhone: "(512) 555-0197", contactEmail: "bcruz@example.com",
     contactAddress: "9412 Little Texas Dr, Austin, TX 78748",
     description: "Disposal hums but won't spin; unit is about 9 years old and she'd rather replace than repair.",
     estimatedValueCents: 42000, notes: null, createdOffsetDays: 3,
   },
 
-  // ---- contacted (6) — conversation started, no quote yet ------------------
+  // ---- contacted (11) — 6 in conversation, 5 quoted, awaiting decision -----
   {
     source: "missed_call", status: "contacted", serviceNeed: "Low Water Pressure Diagnosis",
     urgency: "same_day",
+    priority: "high",
     contactName: "Derek Malone", contactPhone: "(512) 555-0141", contactEmail: null,
     contactAddress: "1604 Woodland Ave, Austin, TX 78741",
     description: "Whole-house pressure dropped over two days; suspects a partially closed valve or a failing PRV.",
@@ -184,6 +194,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "missed_call", status: "contacted", serviceNeed: "Water Heater Repair", urgency: "same_day",
+    priority: "high",
     contactName: "Angela Fontaine", contactPhone: "(512) 555-0136", contactEmail: "afontaine@example.com",
     contactAddress: "2307 Kinney Ave, Austin, TX 78704",
     description: "Pilot light won't stay lit on an 8-year-old 50-gal heater; water is lukewarm by evening.",
@@ -192,6 +203,7 @@ const LEADS: LeadFixture[] = [
   {
     source: "referral", status: "contacted", serviceNeed: "Repipe / Slab Leak Repair",
     urgency: "within_week",
+    priority: "normal",
     contactName: "Hector Barrientos", contactPhone: "(512) 555-0129", contactEmail: null,
     contactAddress: "8104 Mesa Dr, Austin, TX 78759",
     description: "Warm spot on the kitchen floor and a spike in the water bill; referred by the Hendersons on the same street.",
@@ -200,6 +212,7 @@ const LEADS: LeadFixture[] = [
   {
     source: "web_form", status: "contacted", serviceNeed: "Shower Valve Replacement",
     urgency: "within_week",
+    priority: "normal",
     contactName: "Molly Tran", contactPhone: "(512) 555-0117", contactEmail: "molly.tran@example.com",
     contactAddress: "2001 S I-35 Frontage Rd, Austin, TX 78704",
     description: "Shower drips even with the handle off; single-handle Moen valve likely needs a cartridge swap.",
@@ -207,6 +220,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "missed_call", status: "contacted", serviceNeed: "Outdoor Faucet Repair", urgency: "flexible",
+    priority: "normal",
     contactName: "Calvin Bedrossian", contactPhone: "(512) 555-0109", contactEmail: null,
     contactAddress: "4908 Duval St, Austin, TX 78751",
     description: "Hose bib drips year-round and sprays at the threads; wants a freeze-proof sillcock installed.",
@@ -215,80 +229,91 @@ const LEADS: LeadFixture[] = [
   {
     source: "repeat_customer", status: "contacted", serviceNeed: "Sewer Line Camera Inspection",
     urgency: "within_week",
+    priority: "normal",
     contactName: "The Hendersons (Jim & Ruth)", contactPhone: "(512) 555-0123", contactEmail: "jhenderson@example.com",
     contactAddress: "8122 Mesa Dr, Austin, TX 78759",
     description: "Two toilets gurgle when the washer drains; repeat customers (drain cleaning last spring) want a camera run before it becomes an excavation.",
     estimatedValueCents: 34900, notes: "Repeat customer — 3rd job in 2 years. Bill to the old account rate.", createdOffsetDays: 9,
   },
 
-  // ---- qualified (5) — scope confirmed, quotes going out -------------------
+  // ---- quoted (5) -> contacted — quotes out, awaiting decision --------------
   {
-    source: "missed_call", status: "qualified", serviceNeed: "Water Heater Replacement", urgency: "within_week",
+    source: "missed_call", status: "contacted", serviceNeed: "Water Heater Replacement", urgency: "within_week",
+    priority: "normal",
     contactName: "Gloria Nkemdirim", contactPhone: "(512) 555-0146", contactEmail: "g.nkemdirim@example.com",
     contactAddress: "1305 Garden Villa Ln, Austin, TX 78745",
     description: "Electric 50-gal heater is 12 years old and rusting at the seams; wants a quote for like-for-like plus expansion tank.",
     estimatedValueCents: 195000, notes: "Quote sent 9/2 — deciding between standard and power-vent.", createdOffsetDays: 4,
   },
   {
-    source: "referral", status: "qualified", serviceNeed: "Gas Line for Grill", urgency: "flexible",
+    source: "referral", status: "contacted", serviceNeed: "Gas Line for Grill", urgency: "flexible",
+    priority: "normal",
     contactName: "Tanner Whitmore", contactPhone: "(512) 555-0102", contactEmail: null,
     contactAddress: "3404 Golden Arrow Dr, Austin, TX 78745",
     description: "Wants a natural gas line stubbed to the back patio for a built-in grill; needs permit guidance.",
     estimatedValueCents: 95000, notes: "Referred by Gloria Nkemdirim.", createdOffsetDays: 7,
   },
   {
-    source: "web_form", status: "qualified", serviceNeed: "Bathroom Remodel Rough-In", urgency: "flexible",
+    source: "web_form", status: "contacted", serviceNeed: "Bathroom Remodel Rough-In", urgency: "flexible",
+    priority: "normal",
     contactName: "Alicia Grant", contactPhone: "(512) 555-0189", contactEmail: "agrant@example.com",
     contactAddress: "704 West Ave, Austin, TX 78701",
     description: "Converting a tub to a walk-in shower; needs drain relocation and pressure-balance valve quoted for the GC.",
     estimatedValueCents: 320000, notes: "GC is Hartline Renovations — coordinate with their site supervisor.", createdOffsetDays: 10,
   },
   {
-    source: "missed_call", status: "qualified", serviceNeed: "Tankless Water Heater Install", urgency: "within_week",
+    source: "missed_call", status: "contacted", serviceNeed: "Tankless Water Heater Install", urgency: "within_week",
+    priority: "normal",
     contactName: "Devon Achterberg", contactPhone: "(512) 555-0171", contactEmail: "devon.a@example.com",
     contactAddress: "4606 Deep Hollow Rd, Austin, TX 78749",
     description: "Tank unit died; wants a tankless conversion quote including gas line upsizing and new venting.",
     estimatedValueCents: 420000, notes: "Wrote up the Navien NPE-240A2 option; awaiting decision.", createdOffsetDays: 12,
   },
   {
-    source: "missed_call", status: "qualified", serviceNeed: "Hydro Jetting", urgency: "same_day",
+    source: "missed_call", status: "contacted", serviceNeed: "Hydro Jetting", urgency: "same_day",
+    priority: "high",
     contactName: "Rosa Villarreal", contactPhone: "(512) 555-0158", contactEmail: null,
     contactAddress: "1802 Perchalk St, Austin, TX 78744",
     description: "Restaurant kitchen lines slow every 3 months; owner wants hydro jetting on a maintenance cadence instead of emergency clears.",
     estimatedValueCents: 47500, notes: "Potential quarterly maintenance contract — manager to follow up.", createdOffsetDays: 14,
   },
 
-  // ---- converted (5) — booked jobs with appointments -----------------------
+  // ---- ex-converted (5) -> booked (3) / completed (2 — completed appt) ------
   {
-    source: "missed_call", status: "converted", serviceNeed: "Water Heater Replacement", urgency: "emergency",
+    source: "missed_call", status: "booked", serviceNeed: "Water Heater Replacement", urgency: "emergency",
+    priority: "emergency",
     contactName: "Frank Delgado", contactPhone: "(512) 555-0111", contactEmail: "fdelgado@example.com",
     contactAddress: "2204 Burton Dr, Austin, TX 78704",
     description: "Rusted 40-gal heater flooded the utility closet; replaced with a 50-gal power-vent unit same week.",
     estimatedValueCents: 215000, notes: "Paid by check on completion.", createdOffsetDays: 21, convertedAfterDays: 1,
   },
   {
-    source: "repeat_customer", status: "converted", serviceNeed: "Sump Pump Replacement", urgency: "same_day",
+    source: "repeat_customer", status: "completed", serviceNeed: "Sump Pump Replacement", urgency: "same_day",
+    priority: "high",
     contactName: "Nadia Petrov", contactPhone: "(512) 555-0168", contactEmail: "nadia.p@example.com",
     contactAddress: "7412 Rain Creek Pkwy, Austin, TX 78759",
     description: "Existing sump pump failed ahead of storm season; swapped in a 1/2 HP primary with battery backup.",
     estimatedValueCents: 148000, notes: null, createdOffsetDays: 18, convertedAfterDays: 0,
   },
   {
-    source: "web_form", status: "converted", serviceNeed: "Main Water Line Replacement", urgency: "within_week",
+    source: "web_form", status: "completed", serviceNeed: "Main Water Line Replacement", urgency: "within_week",
+    priority: "normal",
     contactName: "Owen Mbeki", contactPhone: "(512) 555-0139", contactEmail: "owen.mbeki@example.com",
     contactAddress: "3909 Shoal Creek Blvd, Austin, TX 78756",
     description: "Polybutylene main line cracked at the yard wall; replaced ~40 ft with PEX and new shutoff.",
     estimatedValueCents: 380000, notes: "Insurance covered part — invoiced remainder to owner.", createdOffsetDays: 26, convertedAfterDays: 3,
   },
   {
-    source: "referral", status: "converted", serviceNeed: "Drain Cleaning", urgency: "same_day",
+    source: "referral", status: "booked", serviceNeed: "Drain Cleaning", urgency: "same_day",
+    priority: "high",
     contactName: "Jun Watanabe", contactPhone: "(512) 555-0193", contactEmail: null,
     contactAddress: "1605 E 6th St, Austin, TX 78702",
     description: "Main line clogged with roots; cleared with a cable machine and left root-treatment tabs.",
     estimatedValueCents: 27500, notes: null, createdOffsetDays: 15, convertedAfterDays: 0,
   },
   {
-    source: "missed_call", status: "converted", serviceNeed: "Fixture Repair & Replacement", urgency: "flexible",
+    source: "missed_call", status: "booked", serviceNeed: "Fixture Repair & Replacement", urgency: "flexible",
+    priority: "normal",
     contactName: "Colleen O'Shea", contactPhone: "(512) 555-0126", contactEmail: "coshea@example.com",
     contactAddress: "2903 Miriam Ave, Austin, TX 78745",
     description: "Two dripping faucets and a running toilet handled in one visit; also swapped corroded angle stops.",
@@ -298,6 +323,7 @@ const LEADS: LeadFixture[] = [
   // ---- lost (3) -------------------------------------------------------------
   {
     source: "missed_call", status: "lost", serviceNeed: "Sewer Line Replacement", urgency: "emergency",
+    priority: "emergency",
     contactName: "Bernard Kessler", contactPhone: "(512) 555-0104", contactEmail: null,
     contactAddress: "1109 Chalmers Ave, Austin, TX 78722",
     description: "Sewer collapse under the driveway; needed excavation on a deadline we couldn't schedule in time.",
@@ -305,6 +331,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "web_form", status: "lost", serviceNeed: "Commercial Repipe Quote", urgency: "flexible",
+    priority: "normal",
     contactName: "DeeAnn Kowalczyk", contactPhone: "(512) 555-0176", contactEmail: "dkowalczyk@example.com",
     contactAddress: "6406 Springdale Rd, Austin, TX 78723",
     description: "10-unit strip center repipe inquiry; outside our service scope for commercial jobs.",
@@ -312,6 +339,7 @@ const LEADS: LeadFixture[] = [
   },
   {
     source: "missed_call", status: "lost", serviceNeed: "Water Heater Repair", urgency: "same_day",
+    priority: "high",
     contactName: "Peter Ainsworth", contactPhone: "(512) 555-0152", contactEmail: null,
     contactAddress: "1104 Nuevo Leon St, Austin, TX 78704",
     description: "Thermocouple replacement on an older heater; caller took a cheaper handyman quote.",
@@ -335,7 +363,7 @@ const CONVERSATIONS: ConversationFixture[] = [
   { lead: 17, status: "booked", summary: "Yard-line crack; scheduled water line replacement estimate, then install.", gaps: [5, 11, 18, 30, 55, 75] },
   { lead: 18, status: "booked", summary: "Roots in main; cable clear + booked follow-up camera check.", gaps: [4, 8, 15, 25, 35, 50] },
   { lead: 19, status: "booked", summary: "Two faucets + toilet; bundled fixture visit booked for Saturday morning.", gaps: [6, 10, 16, 28, 42, 58] },
-  // qualified → awaiting customer decision
+  // quoted → awaiting customer decision
   { lead: 10, status: "awaiting_customer", summary: "Quoted like-for-like vs power-vent heater; customer deciding.", gaps: [4, 9, 13, 22, 0, 0] },
   { lead: 13, status: "awaiting_customer", summary: "Tankless conversion quote (Navien 240A2) sent; awaiting go-ahead.", gaps: [5, 10, 16, 25, 0, 0] },
   { lead: 14, status: "active", summary: "Restaurant wants hydro jetting cadence; drafting quarterly plan.", gaps: [3, 8, 12, 18, 0, 0] },
@@ -475,10 +503,10 @@ async function main(): Promise<void> {
       ? new Date(createdAt.getTime() + l.convertedAfterDays * 86_400_000)
       : null;
     const [row] = (await query(
-      `INSERT INTO leads (business_id, source, status, service_need, urgency, contact_name, contact_phone,
+      `INSERT INTO leads (business_id, source, status, priority, service_need, urgency, contact_name, contact_phone,
          contact_email, contact_address, description, estimated_value_cents, notes, converted_at, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-      [businessId, l.source, l.status, l.serviceNeed, l.urgency, l.contactName, l.contactPhone,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [businessId, l.source, l.status, l.priority, l.serviceNeed, l.urgency, l.contactName, l.contactPhone,
         l.contactEmail, l.contactAddress, l.description, l.estimatedValueCents, l.notes, convertedAt, createdAt],
     )) as unknown as Inserted[];
     leadIds.push(row.id);
