@@ -344,3 +344,24 @@ export async function deleteConversation(businessId: string, conversationId: str
   const rows = await db`DELETE FROM conversations WHERE id = ${conversationId} AND business_id = ${businessId} RETURNING id`;
   return rows.length > 0;
 }
+
+/**
+ * Webhook path (Phase 2 build #4): find the most recent conversation for a
+ * customer phone, or start one. A conversation created here has no lead yet —
+ * the link is set later when the AI flow (or the shop) ties it to a lead.
+ */
+export async function findOrCreateConversationForPhone(
+  businessId: string,
+  customerPhone: string,
+): Promise<Conversation> {
+  assertServer();
+  const db = sql();
+  const existing = await db`
+    SELECT * FROM conversations
+    WHERE business_id = ${businessId} AND customer_phone = ${customerPhone}
+    ORDER BY updated_at DESC
+    LIMIT 1`;
+  const found = existing[0] as unknown as Conversation | undefined;
+  if (found) return found;
+  return createConversation(businessId, { customerPhone, status: "active" });
+}

@@ -39,7 +39,13 @@ export type LeadPriority = 'emergency' | 'high' | 'normal';
 
 export type ConversationStatus = 'active' | 'awaiting_customer' | 'booked' | 'closed';
 export type MessageDirection = 'inbound' | 'outbound';
-export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed';
+/**
+ * Phase 2 build #4 (migration 008): 'unclassified' is the honest placeholder
+ * for an inbound SMS stored while no LLM is configured — the message is real,
+ * no AI parse exists yet, nothing is invented. Classification flips the row
+ * to 'delivered' and stamps the classification payload.
+ */
+export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'unclassified';
 
 /**
  * Phase 2 request-driven lifecycle (migration 006 — text + CHECK, not a PG
@@ -206,9 +212,29 @@ export interface Message {
   status: MessageStatus;
   /** Provider message id (e.g. Twilio SID); unique when present. */
   externalId: string | null;
+  /** Migration 008: LLM parse of an inbound message; NULL = never classified. */
+  classification: MessageClassification | null;
   sentAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Structured LLM parse of one inbound SMS (migration 008). Every field is
+ * optional: the model reports what it could extract, and the DB stores the
+ * raw payload verbatim — nothing is inferred outside the model call.
+ */
+export interface MessageClassification {
+  serviceNeed: string | null;
+  urgency: 'emergency' | 'same_day' | 'within_week' | 'flexible' | null;
+  priority: 'emergency' | 'high' | 'normal' | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  serviceAddress: string | null;
+  safetyConcern: boolean | null;
+  notes: string | null;
+  /** Model + base URL that produced this parse, for auditability. */
+  model: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +323,29 @@ export interface BusinessHour {
 export interface SchemaMigration {
   name: string;
   appliedAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// SMS opt-outs (migration 008 — TCPA/10DLC compliance)
+// ---------------------------------------------------------------------------
+
+/**
+ * A phone that must NEVER receive outbound SMS from this business again
+ * (customer texted STOP, or the owner added it manually). Enforced in the
+ * send path (src/lib/server/textBack.ts) — the whole table is the compliance
+ * boundary, not just the text-back flow.
+ */
+export interface SmsOptOut {
+  id: string;
+  businessId: string;
+  /** E.164-normalized customer phone. */
+  phone: string;
+  /** 'stop_reply' (customer texted STOP) | 'owner_added' (manual). */
+  reason: 'stop_reply' | 'owner_added';
+  /** The inbound message SID that carried the STOP, when known. */
+  sourceMessageSid: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 // ---------------------------------------------------------------------------
