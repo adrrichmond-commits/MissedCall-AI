@@ -28,6 +28,7 @@
  */
 import { query } from "./db";
 import { hashPassword } from "../src/lib/server/password";
+import { classifyServiceArea } from "../src/lib/serviceArea";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,6 +46,11 @@ function minutesFrom(base: Date, minutes: number): Date {
   return new Date(base.getTime() + minutes * 60_000);
 }
 void minutesFrom;
+
+/** `minutes` in the past — for recent-feed fixtures that must never land in the future. */
+function minutesAgo(minutes: number): Date {
+  return new Date(Date.now() - minutes * 60_000);
+}
 
 interface Inserted {
   id: string;
@@ -133,6 +139,12 @@ interface LeadFixture {
   createdOffsetDays: number;
   /** Days after creation when it converted (converted leads only). */
   convertedAfterDays?: number;
+  /**
+   * Override the computed service-area verdict (migration 007). When absent,
+   * the seed computes it from contactAddress + SERVICE_AREAS via the same
+   * classifyServiceArea() the createLead capture path uses.
+   */
+  serviceAreaStatus?: "in_area" | "out_of_area" | "unknown";
 }
 
 const LEADS: LeadFixture[] = [
@@ -351,6 +363,28 @@ const LEADS: LeadFixture[] = [
     description: "Thermocouple replacement on an older heater; caller took a cheaper handyman quote.",
     estimatedValueCents: 16500, notes: "Lost to price — left door open for future service.", createdOffsetDays: 32,
   },
+
+  // ---- out-of-area (2) — captured + flagged, never dropped (migration 007) --
+  {
+    source: "missed_call", status: "new", serviceNeed: "Water Heater Repair", urgency: "same_day",
+    priority: "high",
+    contactName: "Marcus Deveraux", contactPhone: "(713) 555-0186", contactEmail: null,
+    contactAddress: "1400 Smith St, Houston, TX 77002",
+    description: "Pilot keeps going out on a rooftop-cabinet heater at his shop; wants someone today.",
+    estimatedValueCents: 22000,
+    notes: "OUT OF SERVICE AREA — Houston ZIP. Texted the caller; left the lead for follow-up.",
+    createdOffsetDays: 0,
+  },
+  {
+    source: "web_form", status: "contacted", serviceNeed: "Kitchen Repipe Estimate", urgency: "within_week",
+    priority: "normal",
+    contactName: "Louisa Fang", contactPhone: "(512) 555-0164", contactEmail: "lfang@example.com",
+    contactAddress: "2210 Chulavista Dr, El Paso, TX 79902",
+    description: "Galvanized lines corroding; insurance asked for a repipe estimate before renewal.",
+    estimatedValueCents: 95000,
+    notes: "OUT OF SERVICE AREA — El Paso. Called to explain coverage; kept the estimate on file.",
+    createdOffsetDays: 5,
+  },
 ];
 
 interface ConversationFixture {
@@ -511,12 +545,15 @@ async function main(): Promise<void> {
     const convertedAt = l.convertedAfterDays !== undefined
       ? new Date(createdAt.getTime() + l.convertedAfterDays * 86_400_000)
       : null;
+    // Migration 007: same verdict the live capture path (createLead) computes.
+    const serviceAreaStatus = l.serviceAreaStatus ?? classifyServiceArea(l.contactAddress, SERVICE_AREAS);
     const [row] = (await query(
       `INSERT INTO leads (business_id, source, status, priority, service_need, urgency, contact_name, contact_phone,
-         contact_email, contact_address, description, estimated_value_cents, notes, converted_at, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+         contact_email, contact_address, description, estimated_value_cents, notes, converted_at, created_at, service_area_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [businessId, l.source, l.status, l.priority, l.serviceNeed, l.urgency, l.contactName, l.contactPhone,
-        l.contactEmail, l.contactAddress, l.description, l.estimatedValueCents, l.notes, convertedAt, createdAt],
+        l.contactEmail, l.contactAddress, l.description, l.estimatedValueCents, l.notes, convertedAt, createdAt,
+        serviceAreaStatus],
     )) as unknown as Inserted[];
     leadIds.push(row.id);
   }
@@ -595,10 +632,61 @@ async function main(): Promise<void> {
     );
   }
 
+  // --- notifications (migration 007 — in-app notification center feed) ---------
+  // Realistic history: lead events for recent + won leads, appointment events
+  // mirroring the REQUESTED/CONFIRMED/DECLINED lifecycle above. Recent events
+  // are unread so the bell shows a real count; older ones are read.
+  const notify = (
+    type: string,
+    payload: Record<string, unknown>,
+    dayOffset: number,
+    hour: number,
+    read: boolean,
+  ) => query(
+    `INSERT INTO notifications (business_id, type, payload, read_at, created_at)
+     VALUES ($1,$2,$3::jsonb,$4,$5)`,
+    [businessId, type, JSON.stringify(payload), read ? at(dayOffset, hour, 30) : null, at(dayOffset, hour)],
+  );
+  const notifyAt = (
+    type: string,
+    payload: Record<string, unknown>,
+    when: Date,
+    read: boolean,
+  ) => query(
+    `INSERT INTO notifications (business_id, type, payload, read_at, created_at)
+     VALUES ($1,$2,$3::jsonb,$4,$5)`,
+    [businessId, type, JSON.stringify(payload), read ? minutesAgo(1) : null, when],
+  );
+  const leadFix = (i: number) => LEADS[i]!;
+  await notifyAt("new_lead",
+    { leadId: leadIds[0]!, leadName: leadFix(0).contactName, serviceNeed: leadFix(0).serviceNeed, priority: "high" },
+    minutesAgo(95), false);
+  await notifyAt("new_lead",
+    { leadId: leadIds[23]!, leadName: leadFix(23).contactName, serviceNeed: leadFix(23).serviceNeed, priority: "high" },
+    minutesAgo(70), false);
+  await notifyAt("appointment_requested",
+    { appointmentId: "seed-requested", leadId: leadIds[13]!, leadName: leadFix(13).contactName,
+      serviceNeed: "Water Heater Repair", scheduledAt: at(8, 13).toISOString() },
+    minutesAgo(45), false);
+  await notify("new_lead",
+    { leadId: leadIds[2]!, leadName: leadFix(2).contactName, serviceNeed: leadFix(2).serviceNeed, priority: "emergency" },
+    -1, 16, false);
+  await notifyAt("appointment_confirmed",
+    { leadId: leadIds[6]!, leadName: leadFix(6).contactName, serviceNeed: "Leak Detection & Repair",
+      scheduledAt: at(1, 10).toISOString() },
+    minutesAgo(200), true);
+  await notify("lead_booked",
+    { leadId: leadIds[15]!, leadName: leadFix(15).contactName, serviceNeed: leadFix(15).serviceNeed, priority: "emergency" },
+    -20, 12, true);
+  await notify("appointment_declined",
+    { leadId: leadIds[9]!, leadName: leadFix(9).contactName, serviceNeed: "Shower Valve Replacement",
+      scheduledAt: at(-3, 10).toISOString() },
+    -3, 12, true);
+
   // --- report ---------------------------------------------------------------------
   const tables = [
     "businesses", "users", "leads", "conversations", "messages", "appointments",
-    "services", "service_defaults", "service_areas", "business_hours",
+    "services", "service_defaults", "service_areas", "business_hours", "notifications",
   ];
   console.log("\nSeed complete. Row counts:");
   for (const t of tables) {

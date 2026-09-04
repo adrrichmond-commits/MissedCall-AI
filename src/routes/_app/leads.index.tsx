@@ -7,6 +7,7 @@ import {
   PageHeader,
   PageLoading,
   PriorityBadge,
+  ServiceAreaBadge,
   StatusBadge,
 } from "~/components/app/pageStates";
 import { formatDate, formatMoney, labelEnum } from "~/lib/format";
@@ -157,6 +158,7 @@ function LeadsPage() {
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-sm font-semibold text-slate-900">{l.contactName}</p>
                   <span className="flex items-center gap-1.5">
+                    <ServiceAreaBadge status={l.serviceAreaStatus} />
                     <PriorityBadge priority={l.priority} />
                     <StatusBadge status={l.status} />
                   </span>
@@ -209,6 +211,7 @@ function LeadsPage() {
                           SMS
                         </span>
                       ) : null}
+                      <ServiceAreaBadge status={l.serviceAreaStatus} />
                     </td>
                     <td className="px-4 py-3 text-slate-600">{labelEnum(l.source)}</td>
                     <td className="px-4 py-3">

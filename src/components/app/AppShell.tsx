@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CurrentUserView } from "~/lib/server/sessionFns";
 import { Badge } from "~/components/ui/Badge";
+import { NotificationBell } from "~/components/app/NotificationBell";
 
 const NAV: { href: string; label: string; icon: string; ownerOnly?: boolean }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "M3 12l9-8 9 8M5 10v10h5v-6h4v6h5V10" },
@@ -92,7 +93,7 @@ export function AppShell({ user, children }: { user: CurrentUserView; children: 
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600 text-xs font-bold text-white">M</span>
           {user.businessName}
         </span>
-        <span className="h-9 w-9" aria-hidden="true" />
+        <NotificationBell pathname={pathname} />
       </div>
 
       <div className="mx-auto flex w-full max-w-7xl">
@@ -157,6 +158,7 @@ export function AppShell({ user, children }: { user: CurrentUserView; children: 
             <div className="flex items-center gap-3">
               <Badge tone={user.businessPlan === "trial" ? "amber" : "green"}>{user.businessPlan} plan</Badge>
               {!user.emailVerified ? <Badge tone="red">email unverified</Badge> : null}
+              <NotificationBell pathname={pathname} />
             </div>
           </header>
           <main className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</main>
