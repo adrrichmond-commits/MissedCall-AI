@@ -411,3 +411,21 @@ export async function updateBusinessSettings(
   const rows = await db`UPDATE businesses SET settings = ${JSON.stringify(settings)}::jsonb WHERE id = ${businessId} RETURNING *`;
   return (rows[0] as unknown as Business | undefined) ?? null;
 }
+
+/**
+ * Webhook-only lookup (Phase 2 build #4): resolve the business that owns a
+ * called number by its last-10-digit phone key. Deliberately cross-business
+ * (like login email lookup) — the inbound webhook carries no session, only
+ * the To number. Used exclusively by src/routes/api/webhooks/twilio.ts.
+ */
+export async function getBusinessByPhoneKey(phoneKey: string): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const digits = "%" + phoneKey;
+  const rows = await db`
+    SELECT * FROM businesses
+    WHERE regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') LIKE ${digits}
+    ORDER BY created_at ASC
+    LIMIT 1`;
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
