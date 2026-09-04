@@ -4,6 +4,8 @@
  * ISOLATION RULE: every function takes `businessId` and filters on it —
  * the WHERE clause is the isolation boundary, so no function may omit it.
  */
+import { classifyServiceArea } from "../../lib/serviceArea";
+import { listServiceAreas } from "./settings";
 import type { Lead, LeadPriority, LeadSource, LeadStatus, LeadUrgency } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
@@ -212,10 +214,16 @@ export async function missedCallRecoveryStats(
 export async function createLead(businessId: string, input: CreateLeadInput): Promise<Lead> {
   assertServer();
   const db = sql();
+  // Phase 2 build #3: classify the job address against the business's service
+  // areas at capture time. The lead is ALWAYS captured — out-of-area rows are
+  // flagged (service_area_status), never dropped. No service areas configured
+  // or undecidable address => 'unknown', not a guess.
+  const areas = await listServiceAreas(businessId);
+  const serviceAreaStatus = classifyServiceArea(input.contactAddress, areas);
   const rows = await db.query(
     `INSERT INTO leads (business_id, source, status, service_need, urgency, contact_name, contact_phone,
-       contact_email, contact_address, description, estimated_value_cents, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       contact_email, contact_address, description, estimated_value_cents, notes, service_area_status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      RETURNING *`,
     [
       businessId,
@@ -230,6 +238,7 @@ export async function createLead(businessId: string, input: CreateLeadInput): Pr
       input.description ?? null,
       input.estimatedValueCents ?? null,
       input.notes ?? null,
+      serviceAreaStatus,
     ],
   );
   return rows[0] as unknown as Lead;

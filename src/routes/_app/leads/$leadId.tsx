@@ -5,6 +5,8 @@ import {
   ErrorState,
   PageLoading,
   PriorityBadge,
+  ServiceAreaBadge,
+  serviceAreaLabel,
   StatusBadge,
 } from "~/components/app/pageStates";
 import { formatDateTime, formatMoney, labelEnum } from "~/lib/format";
@@ -95,6 +97,7 @@ function LeadDetailPage() {
       <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-bold tracking-tight text-slate-900 lg:text-2xl">{lead.contactName}</h1>
+          <ServiceAreaBadge status={lead.serviceAreaStatus} />
           <PriorityBadge priority={lead.priority} />
           <StatusBadge status={status} />
         </div>
@@ -132,6 +135,11 @@ function LeadDetailPage() {
             </h2>
             <dl className="mt-3">
               <DetailRow label="Service need">{lead.serviceNeed}</DetailRow>
+              <DetailRow label="Service area">
+                <span className={lead.serviceAreaStatus === "out_of_area" ? "font-semibold text-amber-700" : ""}>
+                  {serviceAreaLabel(lead.serviceAreaStatus)}
+                </span>
+              </DetailRow>
               <DetailRow label="Priority">
                 <PriorityBadge priority={lead.priority} />
               </DetailRow>

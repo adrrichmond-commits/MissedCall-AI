@@ -56,6 +56,24 @@ export type AppointmentStatus =
 
 export type ServiceAreaKind = 'zip' | 'city';
 
+/**
+ * Phase 2 build #3 (migration 007): where the caller sits relative to the
+ * business's service areas, captured at lead capture time. 'unknown' means
+ * the address carried no decidable ZIP/city — never a guess.
+ */
+export type ServiceAreaStatus = 'in_area' | 'out_of_area' | 'unknown';
+
+/**
+ * In-app notification center feed (migration 007). `type` is constrained by
+ * notifications_type_check; `payload` holds display/link fields.
+ */
+export type NotificationType =
+  | 'new_lead'
+  | 'lead_booked'
+  | 'appointment_requested'
+  | 'appointment_confirmed'
+  | 'appointment_declined';
+
 // ---------------------------------------------------------------------------
 // Core: businesses, users, auth tokens
 // ---------------------------------------------------------------------------
@@ -157,6 +175,8 @@ export interface Lead {
   estimatedValueCents: number | null;
   notes: string | null;
   convertedAt: Date | null;
+  /** Migration 007: captured-at-time service-area verdict for the job address. */
+  serviceAreaStatus: ServiceAreaStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -277,4 +297,20 @@ export interface BusinessHour {
 export interface SchemaMigration {
   name: string;
   appliedAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (migration 007 — in-app notification center)
+// ---------------------------------------------------------------------------
+
+export interface Notification {
+  id: string;
+  businessId: string;
+  type: NotificationType;
+  /** Event details (lead/appointment ids + display fields). */
+  payload: Record<string, unknown>;
+  /** Null while unread; stamped by mark-as-read. */
+  readAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }

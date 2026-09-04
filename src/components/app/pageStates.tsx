@@ -169,3 +169,21 @@ export function PriorityBadge({ priority }: { priority: string }) {
   if (priority === "normal") return <Badge tone="green">🟢 Normal</Badge>;
   return <Badge tone="slate">{priority}</Badge>;
 }
+
+/**
+ * Migration 007 service-area flag (build #3): out-of-area leads are captured,
+ * never dropped — this badge just makes them visible at a glance. In-area is
+ * the normal case and stays badge-free to avoid noise; 'unknown' renders as
+ * explanatory text on the detail page only.
+ */
+export function ServiceAreaBadge({ status }: { status: string }) {
+  if (status === "out_of_area") return <Badge tone="amber">Out of area</Badge>;
+  return null;
+}
+
+/** Detail-page label for the captured service-area verdict. */
+export function serviceAreaLabel(status: string): string {
+  if (status === "in_area") return "In service area";
+  if (status === "out_of_area") return "Outside service area";
+  return "Not determined (no ZIP/city in address)";
+}

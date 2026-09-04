@@ -161,6 +161,8 @@ export interface LeadsPageData {
     estimatedValueCents: number | null;
     createdAt: string;
     hasConversation: boolean;
+    /** Migration 007: in_area / out_of_area / unknown (service-area check). */
+    serviceAreaStatus: string;
   }[];
   total: number;
   page: number;
@@ -203,6 +205,7 @@ export const getLeadsFn = createServerFn({ method: "GET" })
             estimatedValueCents: l.estimatedValueCents,
             createdAt: iso(l.createdAt) ?? "",
             hasConversation: withConv.has(l.id),
+            serviceAreaStatus: l.serviceAreaStatus,
           })),
         },
       };
@@ -229,6 +232,8 @@ export interface LeadDetailData {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Migration 007: in_area / out_of_area / unknown (service-area check). */
+  serviceAreaStatus: string;
   conversations: {
     id: string;
     status: string;
@@ -267,6 +272,7 @@ export const getLeadFn = createServerFn({ method: "GET" })
           notes: lead.notes,
           createdAt: iso(lead.createdAt) ?? "",
           updatedAt: iso(lead.updatedAt) ?? "",
+          serviceAreaStatus: lead.serviceAreaStatus,
           conversations: summaries.map((c) => ({
             id: c.id,
             status: c.status,
@@ -310,6 +316,23 @@ export const updateLeadStatusFn = createServerFn({ method: "POST" })
         if (!existing) return { ok: false, status: 404, error: "Lead not found." };
         const updated = await q.updateLead(businessId, leadId, { status });
         if (!updated) return { ok: false, status: 404, error: "Lead not found." };
+        // Notification center (build #3): winning the job is a lead_booked
+        // event for the whole shop. Never blocks the status change itself.
+        if (updated.status === "booked" && existing.status !== "booked") {
+          try {
+            await q.createNotification(businessId, {
+              type: "lead_booked",
+              payload: {
+                leadId: updated.id,
+                leadName: updated.contactName,
+                serviceNeed: updated.serviceNeed,
+                priority: updated.priority,
+              },
+            });
+          } catch {
+            // Notification failure must not fail the business write.
+          }
+        }
         return {
           ok: true,
           data: {
@@ -350,6 +373,23 @@ export const confirmAppointmentFn = createServerFn({ method: "POST" })
         }
         const updated = await q.setAppointmentStatus(businessId, appointmentId, "confirmed");
         if (!updated) return { ok: false, status: 404, error: "Appointment not found." };
+        // Notification center (build #3): confirmations are shop-visible
+        // events (owner sees what a manager confirmed). Never blocks the write.
+        try {
+          const lead = updated.leadId ? await q.getLead(businessId, updated.leadId) : null;
+          await q.createNotification(businessId, {
+            type: "appointment_confirmed",
+            payload: {
+              appointmentId: updated.id,
+              leadId: updated.leadId ?? undefined,
+              leadName: lead?.contactName ?? undefined,
+              serviceNeed: updated.serviceSummary,
+              scheduledAt: updated.scheduledAt.toISOString(),
+            },
+          });
+        } catch {
+          // Notification failure must not fail the business write.
+        }
         return { ok: true, data: { appointmentId: updated.id, status: updated.status } };
       } catch (e) {
         return authErrorToResult(e);
@@ -378,6 +418,22 @@ export const declineAppointmentFn = createServerFn({ method: "POST" })
         }
         const updated = await q.setAppointmentStatus(businessId, appointmentId, "declined");
         if (!updated) return { ok: false, status: 404, error: "Appointment not found." };
+        // Notification center (build #3). Never blocks the write.
+        try {
+          const lead = updated.leadId ? await q.getLead(businessId, updated.leadId) : null;
+          await q.createNotification(businessId, {
+            type: "appointment_declined",
+            payload: {
+              appointmentId: updated.id,
+              leadId: updated.leadId ?? undefined,
+              leadName: lead?.contactName ?? undefined,
+              serviceNeed: updated.serviceSummary,
+              scheduledAt: updated.scheduledAt.toISOString(),
+            },
+          });
+        } catch {
+          // Notification failure must not fail the business write.
+        }
         return { ok: true, data: { appointmentId: updated.id, status: updated.status } };
       } catch (e) {
         return authErrorToResult(e);
