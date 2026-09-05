@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { getDashboardDataFn } from "~/lib/server/appFns";
+import { getDashboardDataFn, setFollowUpTaskDoneFn } from "~/lib/server/appFns";
 import {
   EmptyState,
   ErrorState,
@@ -122,6 +123,49 @@ function DashboardPage() {
           )}
         </section>
 
+        {/* Follow-up queue (P3-C): open callbacks, oldest-due first */}
+        <section aria-labelledby="follow-ups" className="rounded-xl border border-slate-200 bg-white lg:col-span-2">
+          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
+            <h2 id="follow-ups" className="text-sm font-semibold text-slate-900">
+              Follow-ups
+              {data.followUps.openCount > 0 ? (
+                <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-600/20">
+                  {data.followUps.openCount} open
+                </span>
+              ) : null}
+            </h2>
+            <span className="text-xs text-slate-400">Call back, then mark done</span>
+          </div>
+          {data.followUps.tasks.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                title="No follow-ups"
+                description="Every captured lead gets a callback reminder here automatically."
+              />
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {data.followUps.tasks.map((t) => (
+                <li key={t.id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
+                  <MarkDoneButton taskId={t.id} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a href={`/leads/${t.leadId}`} className="truncate text-sm font-semibold text-brand-700 hover:text-brand-800">
+                        {t.leadName}
+                      </a>
+                      <span className="text-xs text-slate-400">Due {formatDateTime(t.dueAt)}</span>
+                    </div>
+                    <p className="mt-0.5 truncate text-sm text-slate-600">
+                      {t.serviceNeed}
+                      {t.leadPhone ? ` · ${t.leadPhone}` : ""}
+                    </p>
+                    {t.note ? <p className="mt-0.5 truncate text-xs text-slate-500">{t.note}</p> : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
         {/* Next appointments */}
         <section aria-labelledby="next-appts" className="rounded-xl border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
@@ -160,5 +204,25 @@ function DashboardPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+function MarkDoneButton({ taskId }: { taskId: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="Mark follow-up done"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        await setFollowUpTaskDoneFn({ data: { taskId, done: true } });
+        window.location.reload();
+      }}
+      className="mt-0.5 h-5 w-5 flex-none rounded-full border-2 border-slate-300 hover:border-green-600 hover:bg-green-50 disabled:opacity-40"
+      title="Mark done"
+    >
+      <span className="sr-only">Mark done</span>
+    </button>
   );
 }

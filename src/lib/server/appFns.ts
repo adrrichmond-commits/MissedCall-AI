@@ -13,8 +13,18 @@ import { requireActiveWrite, requireAuth } from "~/lib/server/auth.server";
 import type { AuthContext } from "~/lib/server/auth";
 import { authErrorToResult } from "~/lib/server/sessionFns";
 import * as q from "~/db/queries";
+import {
+  LEAD_LIFECYCLE_STATUSES,
+  LEAD_STATUS_LABELS,
+  allowedNextStatuses,
+  toLifecycleStatus,
+} from "~/lib/server/leadLifecycle";
+import { maybeCreateFollowUpTaskForTransition } from "~/lib/server/followUps";
+import type { LeadStatus } from "~/db/schema";
 
-const LEAD_STATUSES = ["new", "contacted", "booked", "completed", "lost"] as const;
+const LEAD_STATUSES = LEAD_LIFECYCLE_STATUSES;
+/** Legacy statuses still accepted from old clients/filters, mapped forward. */
+const LEAD_LEGACY_STATUSES = ["booked", "completed"] as const;
 const LEAD_SOURCES = ["missed_call", "web_form", "referral", "repeat_customer", "other"] as const;
 const LEAD_PRIORITIES = ["emergency", "high", "normal"] as const;
 /** Phase 2 appointment lifecycle (migration 006). */
@@ -24,6 +34,13 @@ function pickEnum<T extends string>(value: unknown, allowed: readonly T[]): T | 
   if (typeof value !== "string") return undefined;
   for (const a of allowed) if (a === value) return a;
   return undefined;
+}
+
+/** Accept legacy statuses too, normalizing to the 011 lifecycle. */
+function pickLeadStatus(value: unknown): LeadStatus | undefined {
+  const legacy = pickEnum(value, LEAD_LEGACY_STATUSES);
+  if (legacy) return toLifecycleStatus(legacy) ?? undefined;
+  return pickEnum(value, LEAD_STATUSES);
 }
 
 function pageParams(raw: { page?: unknown; perPage?: unknown }) {
@@ -59,9 +76,11 @@ export interface DashboardData {
     requestedAppointments: number;
     /** won / (won + lost) — a conversion proxy, not a promise. */
     conversionRate: number | null;
-    /** Open (not booked/completed/lost) leads marked priority='emergency'. */
+    /** Open (not won/lost) leads marked priority='emergency'. */
     emergencyLeads: number;
   };
+  /** P3-C: open follow-up tasks — the callback queue (count + first rows). */
+  followUps: FollowUpsData;
   recentLeads: {
     id: string;
     contactName: string;
@@ -89,6 +108,28 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
       const ctx = await requireAuth();
       const businessId = ctx.business.id;
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      // P3-C: the open follow-up queue (count + oldest-due rows), same shape
+      // getFollowUpsFn returns — dashboard renders it inline.
+      const followUpsRes = await (async (): Promise<FollowUpsData> => {
+        const [tasks, openCount] = await Promise.all([
+          q.listFollowUpTasks(businessId, { done: false }, { limit: 6, order: "asc" }),
+          q.countFollowUpTasks(businessId, { done: false }),
+        ]);
+        return {
+          openCount,
+          tasks: tasks.map((t) => ({
+            id: t.id,
+            leadId: t.leadId,
+            leadName: t.leadName,
+            leadPhone: t.leadPhone,
+            leadStatus: t.leadStatus,
+            serviceNeed: t.serviceNeed,
+            dueAt: iso(t.dueAt) ?? "",
+            createdReason: t.createdReason,
+            note: t.note,
+          })),
+        };
+      })();
       const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments] =
         await Promise.all([
           q.countLeadsCreatedSince(businessId, weekAgo),
@@ -112,11 +153,12 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
             confirmedAppointments: upcomingConfirmed,
             requestedAppointments: upcomingRequested,
             conversionRate:
-              leadStatusCounts.completed + leadStatusCounts.lost > 0
-                ? leadStatusCounts.completed / (leadStatusCounts.completed + leadStatusCounts.lost)
+              leadStatusCounts.won + leadStatusCounts.lost > 0
+                ? leadStatusCounts.won / (leadStatusCounts.won + leadStatusCounts.lost)
                 : null,
             emergencyLeads: priorityCounts.emergency,
           },
+          followUps: followUpsRes,
           recentLeads: recentLeads.map((l) => ({
             id: l.id,
             contactName: l.contactName,
@@ -159,6 +201,9 @@ export interface LeadsPageData {
     status: string;
     source: string;
     estimatedValueCents: number | null;
+    /** P3-C: KB-seeded typical job value range (nulls when no KB service matched). */
+    estimatedJobValueLowCents: number | null;
+    estimatedJobValueHighCents: number | null;
     createdAt: string;
     hasConversation: boolean;
     /** Migration 007: in_area / out_of_area / unknown (service-area check). */
@@ -177,7 +222,7 @@ export const getLeadsFn = createServerFn({ method: "GET" })
       const businessId = ctx.business.id;
       const { page, perPage, offset } = pageParams(data ?? {});
       const filters = {
-        status: pickEnum(data?.status, LEAD_STATUSES),
+        status: pickLeadStatus(data?.status),
         source: pickEnum(data?.source, LEAD_SOURCES),
         priority: pickEnum(data?.priority, LEAD_PRIORITIES),
         search: pickSearch(data?.search),
@@ -203,6 +248,8 @@ export const getLeadsFn = createServerFn({ method: "GET" })
             status: l.status,
             source: l.source,
             estimatedValueCents: l.estimatedValueCents,
+            estimatedJobValueLowCents: l.estimatedJobValueLowCents,
+            estimatedJobValueHighCents: l.estimatedJobValueHighCents,
             createdAt: iso(l.createdAt) ?? "",
             hasConversation: withConv.has(l.id),
             serviceAreaStatus: l.serviceAreaStatus,
@@ -229,11 +276,26 @@ export interface LeadDetailData {
   contactAddress: string | null;
   description: string | null;
   estimatedValueCents: number | null;
+  /** P3-C: KB-seeded typical job value range. */
+  estimatedJobValueLowCents: number | null;
+  estimatedJobValueHighCents: number | null;
+  /** P3-C: the actual invoice amount stamped when the lead was won. */
+  actualWonValueCents: number | null;
   notes: string | null;
   createdAt: string;
   updatedAt: string;
   /** Migration 007: in_area / out_of_area / unknown (service-area check). */
   serviceAreaStatus: string;
+  /** P3-C: lifecycle statuses this lead may legally move to (UI select). */
+  allowedStatuses: string[];
+  followUps: {
+    id: string;
+    dueAt: string;
+    done: boolean;
+    doneAt: string | null;
+    createdReason: string;
+    note: string | null;
+  }[];
   conversations: {
     id: string;
     status: string;
@@ -253,6 +315,8 @@ export const getLeadFn = createServerFn({ method: "GET" })
       const lead = await q.getLead(businessId, leadId);
       if (!lead) return { ok: false, status: 404, error: "Lead not found." };
       const summaries = await q.conversationSummariesForLead(businessId, lead.id);
+      const followUps = await q.listFollowUpTasks(businessId, {}, { limit: 20, order: "asc" });
+      const current = toLifecycleStatus(lead.status) ?? "new";
       return {
         ok: true,
         data: {
@@ -269,10 +333,24 @@ export const getLeadFn = createServerFn({ method: "GET" })
           contactAddress: lead.contactAddress,
           description: lead.description,
           estimatedValueCents: lead.estimatedValueCents,
+          estimatedJobValueLowCents: lead.estimatedJobValueLowCents,
+          estimatedJobValueHighCents: lead.estimatedJobValueHighCents,
+          actualWonValueCents: lead.actualWonValueCents,
           notes: lead.notes,
           createdAt: iso(lead.createdAt) ?? "",
           updatedAt: iso(lead.updatedAt) ?? "",
           serviceAreaStatus: lead.serviceAreaStatus,
+          allowedStatuses: allowedNextStatuses(current),
+          followUps: followUps
+            .filter((t) => t.leadId === lead.id)
+            .map((t) => ({
+              id: t.id,
+              dueAt: iso(t.dueAt) ?? "",
+              done: t.done,
+              doneAt: iso(t.doneAt),
+              createdReason: t.createdReason,
+              note: t.note,
+            })),
           conversations: summaries.map((c) => ({
             id: c.id,
             status: c.status,
@@ -288,13 +366,22 @@ export const getLeadFn = createServerFn({ method: "GET" })
   });
 
 /**
- * Write: change a lead's lifecycle status. Owner + manager only (employee is
- * read-only, matching the settings pattern); the value is whitelisted against
- * the Phase 2 lifecycle and the WHERE clause is business-scoped, so a lead id
- * from another business is a 404.
+ * Write: change a lead's lifecycle status (P3-C full lifecycle). Owner +
+ * manager only (employee is read-only, matching the settings pattern); the
+ * value is whitelisted against the migration-011 lifecycle, illegal
+ * transitions (e.g. won → new) are rejected with a clear error, and the WHERE
+ * clause is business-scoped, so a lead id from another business is a 404.
+ *
+ * P3-C behaviors:
+ *   - won: captures actual_won_value_cents (optional; prefilled by the UI
+ *     from the estimate) and fires the lead_booked notification;
+ *   - follow_up_needed: auto-creates a 'status_follow_up' task carrying the
+ *     business's note (best-effort, like notifications);
+ *   - appointment confirmation automation lives in confirmAppointmentFn —
+ *     won/lost are ALWAYS human calls, nothing auto-sets them.
  */
 export const updateLeadStatusFn = createServerFn({ method: "POST" })
-  .validator((d: unknown) => d as { leadId?: unknown; status?: unknown })
+  .validator((d: unknown) => d as { leadId?: unknown; status?: unknown; note?: unknown; wonValueDollars?: unknown })
   .handler(
     async ({
       data,
@@ -303,22 +390,48 @@ export const updateLeadStatusFn = createServerFn({ method: "POST" })
         const ctx: AuthContext = await requireActiveWrite("owner", "manager");
         const businessId = ctx.business.id;
         const leadId = typeof data?.leadId === "string" ? data.leadId.trim() : "";
-        const status = pickEnum(data?.status, LEAD_STATUSES);
+        const status = pickLeadStatus(data?.status);
         if (!leadId) return { ok: false, status: 400, error: "Missing lead." };
         if (!status) {
           return {
             ok: false,
             status: 400,
-            error: "Unknown status. Choose new, contacted, booked, completed, or lost.",
+            error:
+              "Unknown status. Choose " +
+              LEAD_STATUSES.map((s) => LEAD_STATUS_LABELS[s]).join(", ") +
+              ".",
           };
         }
         const existing = await q.getLead(businessId, leadId);
         if (!existing) return { ok: false, status: 404, error: "Lead not found." };
-        const updated = await q.updateLead(businessId, leadId, { status });
+        const note = typeof data?.note === "string" ? data.note.trim().slice(0, 500) : null;
+        // P3-C: capture the actual won value when marking a job won. Accepted
+        // as dollars (the unit a shop owner types), stored as integer cents.
+        let wonValueCents: number | null = null;
+        if (status === "won" && data?.wonValueDollars != null && data.wonValueDollars !== "") {
+          const n = Number(data.wonValueDollars);
+          if (!Number.isFinite(n) || n < 0) {
+            return { ok: false, status: 400, error: "Won value must be a non-negative dollar amount." };
+          }
+          if (n > 1_000_000) {
+            return { ok: false, status: 400, error: "Won value looks too large — check the amount." };
+          }
+          wonValueCents = Math.round(n * 100);
+        }
+        // Lifecycle legality (pure module): invalid transitions are rejected
+        // with the reason — never written.
+        const from = toLifecycleStatus(existing.status);
+        if (!from) return { ok: false, status: 500, error: "Lead has an unknown stored status." };
+        const transition = q.validateLeadTransition(existing.status, status);
+        if (!transition.ok) return { ok: false, status: 400, error: transition.error ?? "Invalid status transition." };
+        const updated = await q.updateLead(businessId, leadId, {
+          status,
+          ...(wonValueCents != null ? { actualWonValueCents: wonValueCents } : {}),
+        });
         if (!updated) return { ok: false, status: 404, error: "Lead not found." };
         // Notification center (build #3): winning the job is a lead_booked
         // event for the whole shop. Never blocks the status change itself.
-        if (updated.status === "booked" && existing.status !== "booked") {
+        if (updated.status === "won" && existing.status !== "won") {
           try {
             await q.createNotification(businessId, {
               type: "lead_booked",
@@ -327,11 +440,18 @@ export const updateLeadStatusFn = createServerFn({ method: "POST" })
                 leadName: updated.contactName,
                 serviceNeed: updated.serviceNeed,
                 priority: updated.priority,
+                wonValueCents: updated.actualWonValueCents ?? undefined,
+                pipelineValueCents: updated.pipelineValueCents ?? undefined,
               },
             });
           } catch {
             // Notification failure must not fail the business write.
           }
+        }
+        // P3-C: flagging follow_up_needed creates the callback task with the
+        // business's note. Best-effort (same contract as notifications).
+        if (updated.status === "follow_up_needed" && existing.status !== "follow_up_needed") {
+          await maybeCreateFollowUpTaskForTransition(businessId, updated, note);
         }
         return {
           ok: true,
@@ -341,6 +461,120 @@ export const updateLeadStatusFn = createServerFn({ method: "POST" })
             convertedAt: updated.convertedAt ? updated.convertedAt.toISOString() : null,
           },
         };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
+
+// ---------------------------------------------------------------------------
+// Won value (P3-C): update/correct the actual invoice amount on a won lead.
+// Owner + manager, mirroring updateLeadStatusFn.
+// ---------------------------------------------------------------------------
+export const updateLeadWonValueFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { leadId?: unknown; wonValueDollars?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<{ leadId: string; actualWonValueCents: number | null }>> => {
+      try {
+        const ctx: AuthContext = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        const leadId = typeof data?.leadId === "string" ? data.leadId.trim() : "";
+        if (!leadId) return { ok: false, status: 400, error: "Missing lead." };
+        const existing = await q.getLead(businessId, leadId);
+        if (!existing) return { ok: false, status: 404, error: "Lead not found." };
+        // Empty string clears the value; otherwise a non-negative dollar amount.
+        let cents: number | null = null;
+        const raw = data?.wonValueDollars;
+        if (raw != null && raw !== "") {
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n < 0) {
+            return { ok: false, status: 400, error: "Won value must be a non-negative dollar amount." };
+          }
+          if (n > 1_000_000) {
+            return { ok: false, status: 400, error: "Won value looks too large — check the amount." };
+          }
+          cents = Math.round(n * 100);
+        }
+        const updated = await q.updateLead(businessId, leadId, { actualWonValueCents: cents });
+        if (!updated) return { ok: false, status: 404, error: "Lead not found." };
+        return {
+          ok: true,
+          data: { leadId: updated.id, actualWonValueCents: updated.actualWonValueCents },
+        };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
+
+// ---------------------------------------------------------------------------
+// Follow-up tasks (P3-C): the dashboard callback queue. The list IS the
+// scheduler surface — no cron, no reminders worker.
+// ---------------------------------------------------------------------------
+export interface FollowUpsData {
+  openCount: number;
+  tasks: {
+    id: string;
+    leadId: string;
+    leadName: string;
+    leadPhone: string;
+    leadStatus: string;
+    serviceNeed: string;
+    dueAt: string;
+    createdReason: string;
+    note: string | null;
+  }[];
+}
+
+export const getFollowUpsFn = createServerFn({ method: "GET" })
+  .validator((d: unknown) => d as { includeDone?: unknown; limit?: unknown })
+  .handler(async ({ data }): Promise<AppResult<FollowUpsData>> => {
+    try {
+      const ctx = await requireAuth();
+      const businessId = ctx.business.id;
+      const limit = Math.min(Math.max(Math.floor(Number(data?.limit)) || 15, 1), 50);
+      const [tasks, openCount] = await Promise.all([
+        q.listFollowUpTasks(businessId, { done: false }, { limit, order: "asc" }),
+        q.countFollowUpTasks(businessId, { done: false }),
+      ]);
+      return {
+        ok: true,
+        data: {
+          openCount,
+          tasks: tasks.map((t) => ({
+            id: t.id,
+            leadId: t.leadId,
+            leadName: t.leadName,
+            leadPhone: t.leadPhone,
+            leadStatus: t.leadStatus,
+            serviceNeed: t.serviceNeed,
+            dueAt: iso(t.dueAt) ?? "",
+            createdReason: t.createdReason,
+            note: t.note,
+          })),
+        },
+      };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  });
+
+/** Mark a follow-up task done / reopen it. Owner + manager (a shop write). */
+export const setFollowUpTaskDoneFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { taskId?: unknown; done?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<{ taskId: string; done: boolean }>> => {
+      try {
+        const ctx: AuthContext = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        const taskId = typeof data?.taskId === "string" ? data.taskId.trim() : "";
+        const done = data?.done === true;
+        if (!taskId) return { ok: false, status: 400, error: "Missing task." };
+        const task = await q.getFollowUpTask(businessId, taskId);
+        if (!task) return { ok: false, status: 404, error: "Task not found." };
+        const updated = await q.setFollowUpTaskDone(businessId, taskId, done);
+        if (!updated) return { ok: false, status: 404, error: "Task not found." };
+        return { ok: true, data: { taskId: updated.id, done: updated.done } };
       } catch (e) {
         return authErrorToResult(e);
       }
@@ -373,6 +607,26 @@ export const confirmAppointmentFn = createServerFn({ method: "POST" })
         }
         const updated = await q.setAppointmentStatus(businessId, appointmentId, "confirmed");
         if (!updated) return { ok: false, status: 404, error: "Appointment not found." };
+        // P3-C status automation (light): a CONFIRMED appointment means the
+        // job is on the books — move the linked lead to
+        // appointment_scheduled automatically when the lead is still live
+        // (never from won/lost; those are human calls). Best-effort.
+        if (updated.leadId) {
+          try {
+            const lead = await q.getLead(businessId, updated.leadId);
+            if (lead) {
+              const from = toLifecycleStatus(lead.status);
+              const legal =
+                from != null &&
+                q.validateLeadTransition(lead.status, "appointment_scheduled").ok;
+              if (from !== "appointment_scheduled" && legal) {
+                await q.updateLead(businessId, lead.id, { status: "appointment_scheduled" });
+              }
+            }
+          } catch {
+            // Automation failure must not fail the confirmation.
+          }
+        }
         // Notification center (build #3): confirmations are shop-visible
         // events (owner sees what a manager confirmed). Never blocks the write.
         try {

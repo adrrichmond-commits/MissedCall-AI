@@ -26,11 +26,21 @@ export type BusinessPlan = 'trial' | 'starter' | 'growth' | 'pro';
 export type LeadSource = 'missed_call' | 'web_form' | 'referral' | 'repeat_customer' | 'other';
 export type LeadUrgency = 'emergency' | 'same_day' | 'within_week' | 'flexible';
 /**
- * Phase 2 lifecycle for leads (migration 005 — text + CHECK, not a PG enum,
- * so the set stays editable). Replaces the Phase 1
- * new/contacted/qualified/converted/lost lifecycle.
+ * Phase 3 build P3-C lifecycle for leads (migration 011 — text + CHECK, not a
+ * PG enum, so the set stays editable). Extends the Phase 2 set to the full
+ * lead-to-job pipeline; transitions are enforced in
+ * src/lib/server/leadLifecycle.ts. Pre-011 rows ('booked'/'completed') are
+ * backfilled by the migration; LEGACY_STATUS_MAP in leadLifecycle.ts maps any
+ * stragglers for reads.
  */
-export type LeadStatus = 'new' | 'contacted' | 'booked' | 'completed' | 'lost';
+export type LeadStatus =
+  | 'new'
+  | 'contacted'
+  | 'qualified'
+  | 'follow_up_needed'
+  | 'appointment_scheduled'
+  | 'won'
+  | 'lost';
 /**
  * Shop-side triage ranking (migration 005) — how the business prioritizes the
  * job. Distinct from `LeadUrgency`, which is what the caller reported.
@@ -193,10 +203,48 @@ export interface Lead {
   description: string | null;
   /** Rough pipeline value in cents; null until quoted. */
   estimatedValueCents: number | null;
+  /**
+   * P3-C (migration 011): KB-seeded typical job value range, stamped when a
+   * lead's service need resolves to a KB service. The shop's quote
+   * (estimatedValueCents) outranks it; both feed pipeline_value_cents.
+   */
+  estimatedJobValueLowCents: number | null;
+  estimatedJobValueHighCents: number | null;
+  /** P3-C: the actual invoice amount entered when the lead is marked Won. */
+  actualWonValueCents: number | null;
+  /**
+   * P3-C: the single "what is this lead worth" number P3-D Revenue Recovered
+   * sums. Maintained by the query layer (computePipelineValueCents):
+   * won → actual ?? quote ?? est-high; lost → NULL;
+   * open → max(quote, est-high) (either may be null).
+   */
+  pipelineValueCents: number | null;
   notes: string | null;
   convertedAt: Date | null;
   /** Migration 007: captured-at-time service-area verdict for the job address. */
   serviceAreaStatus: ServiceAreaStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * P3-C (migration 011): one row per promised callback. Auto-created on lead
+ * capture ('lead_new', due next business day 9 AM business time) and when a
+ * lead is flagged follow_up_needed ('status_follow_up', carrying the note);
+ * the business can also add 'manual' tasks. The dashboard list of open tasks
+ * IS the scheduler surface — no cron, no reminders worker.
+ */
+export interface FollowUpTask {
+  id: string;
+  businessId: string;
+  /** CASCADEs with the lead: a task for a deleted lead is not actionable. */
+  leadId: string;
+  dueAt: Date;
+  done: boolean;
+  doneAt: Date | null;
+  /** 'lead_new' | 'status_follow_up' | 'manual' (CHECK-constrained). */
+  createdReason: 'lead_new' | 'status_follow_up' | 'manual';
+  note: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
