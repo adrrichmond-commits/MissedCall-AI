@@ -17,6 +17,7 @@
 import { normalizePhone, parseSmsCommand } from "~/lib/smsCommands";
 import { SMS_TEMPLATES, renderSmsTemplate } from "~/lib/smsTemplates";
 import * as q from "~/db/queries";
+import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { isLlmConfigured, llmComplete, readLlmConfig } from "./llm";
@@ -64,16 +65,26 @@ export async function captureMissedCallLead(
   // 2. In-app new_lead notification (always, matching build #3 semantics).
   let textBack: TextBackResult = { outcome: "not_configured", sid: null, reason: "Twilio not configured" };
   try {
-    await q.createNotification(businessId, {
+    const payload = {
+      leadId: lead.id,
+      leadName: lead.contactName,
+      serviceNeed: lead.serviceNeed,
+      priority: lead.priority,
+      textBack: textBack.outcome,
+      textBackReason: textBack.reason,
+    };
+    const notification = await q.createNotification(businessId, {
       type: "new_lead",
-      payload: {
-        leadId: lead.id,
-        leadName: lead.contactName,
-        serviceNeed: lead.serviceNeed,
-        priority: lead.priority,
-        textBack: textBack.outcome,
-        textBackReason: textBack.reason,
-      },
+      payload,
+    });
+    // Fire-and-forget email for the owner (build #6) — no-op unless the
+    // email provider is configured; never blocks or fails the capture.
+    queueNotificationEmail({
+      businessId,
+      notificationId: notification.id,
+      type: "new_lead",
+      payload,
+      store: notificationEmailStore,
     });
   } catch {
     // Notification failure must not fail the capture.

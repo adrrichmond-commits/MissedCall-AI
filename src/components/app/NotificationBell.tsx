@@ -247,8 +247,8 @@ export function NotificationBell({ pathname }: { pathname: string }) {
       </div>
       <div className="border-t border-slate-100 bg-slate-50 px-4 py-2.5">
         <p className="text-xs text-slate-500">
-          In-app notifications are live. Email/SMS delivery switches on with our provider setup —
-          set your preferences in Settings.
+          In-app notifications are live. Email delivery activates when EMAIL_API_KEY is set (new
+          leads, appointment requests, and payment failures email the owner); SMS remains pending provider setup.
         </p>
       </div>
     </div>

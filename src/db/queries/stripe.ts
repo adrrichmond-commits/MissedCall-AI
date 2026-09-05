@@ -138,16 +138,24 @@ export async function applyStripeSubscriptionState(args: {
     ],
   );
 }
-/** Create the in-app 'payment_failed' notification (honest, always-on channel). */
+/**
+ * Create the in-app 'payment_failed' notification (honest, always-on channel).
+ * Returns the notification id so build #6's fire-and-forget email hook can
+ * target it (empty string when the driver returns no row — the email hook
+ * then skips honestly).
+ */
 export async function createPaymentFailedNotification(
   businessId: string,
   payload: Record<string, unknown>,
-): Promise<void> {
+): Promise<string> {
   assertServer();
   const db = sql();
-  await db.query(
+  const rows = await db.query(
     `INSERT INTO notifications (business_id, type, payload)
-     VALUES ($1, 'payment_failed', $2::jsonb)`,
+     VALUES ($1, 'payment_failed', $2::jsonb)
+     RETURNING id`,
     [businessId, JSON.stringify(payload)],
   );
+  const row = rows[0] as unknown as { id: string } | undefined;
+  return row?.id ?? "";
 }

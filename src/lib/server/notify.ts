@@ -8,29 +8,39 @@
  *   import { captureLead } from "~/lib/server/notify";
  *   const lead = await captureLead(businessId, input); // + fires new_lead
  *
- * In-app delivery is always on; provider channels (email/SMS) remain
- * provider-pending and are governed by businesses.settings prefs — no
- * provider calls happen here.
+ * In-app delivery is always on. Since build #6, the business-critical types
+ * (new_lead, appointment_requested) ALSO get a fire-and-forget email attempt
+ * when the provider is configured (EMAIL_API_KEY / EMAIL_FROM) — see
+ * emailDelivery.ts. The email never blocks or fails the in-app insert.
  */
 import * as q from "~/db/queries";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
-
+import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
 /** Capture a lead AND record the new_lead in-app notification. */
 export async function captureLead(businessId: string, input: CreateLeadInput): Promise<Lead> {
   const lead = await q.createLead(businessId, input);
-  await q.createNotification(businessId, {
+  const payload = {
+    leadId: lead.id,
+    leadName: lead.contactName,
+    serviceNeed: lead.serviceNeed,
+    priority: lead.priority,
+  };
+  const notification = await q.createNotification(businessId, {
     type: "new_lead",
-    payload: {
-      leadId: lead.id,
-      leadName: lead.contactName,
-      serviceNeed: lead.serviceNeed,
-      priority: lead.priority,
-    },
+    payload,
+  });
+  // Fire-and-forget email (no-op unless the provider is configured). Never
+  // blocks or throws into the caller.
+  queueNotificationEmail({
+    businessId,
+    notificationId: notification.id,
+    type: "new_lead",
+    payload,
+    store: notificationEmailStore,
   });
   return lead;
 }
-
 export interface AppointmentRequestInput {
   appointmentId: string;
   leadId?: string | null;
@@ -38,20 +48,29 @@ export interface AppointmentRequestInput {
   serviceSummary: string;
   scheduledAt: Date;
 }
-
 /** Record the appointment_requested in-app notification for an AI/customer booking. */
 export async function notifyAppointmentRequested(
   businessId: string,
   input: AppointmentRequestInput,
 ): Promise<void> {
-  await q.createNotification(businessId, {
+  const payload = {
+    appointmentId: input.appointmentId,
+    leadId: input.leadId ?? undefined,
+    leadName: input.leadName ?? undefined,
+    serviceNeed: input.serviceSummary,
+    scheduledAt: input.scheduledAt.toISOString(),
+  };
+  const notification = await q.createNotification(businessId, {
     type: "appointment_requested",
-    payload: {
-      appointmentId: input.appointmentId,
-      leadId: input.leadId ?? undefined,
-      leadName: input.leadName ?? undefined,
-      serviceNeed: input.serviceSummary,
-      scheduledAt: input.scheduledAt.toISOString(),
-    },
+    payload,
+  });
+  // Fire-and-forget email (no-op unless the provider is configured). Never
+  // blocks or throws into the caller.
+  queueNotificationEmail({
+    businessId,
+    notificationId: notification.id,
+    type: "appointment_requested",
+    payload,
+    store: notificationEmailStore,
   });
 }

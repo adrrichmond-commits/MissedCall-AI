@@ -374,6 +374,13 @@ export interface Notification {
   payload: Record<string, unknown>;
   /** Null while unread; stamped by mark-as-read. */
   readAt: Date | null;
+  /**
+   * Phase 2 build #6 (migration 010): stamped ONLY after the email provider
+   * accepted a send for this notification. NULL = email not sent (unconfigured
+   * provider, non-deliverable type, or a failed attempt) — the double-send
+   * guard the delivery hook checks before sending.
+   */
+  emailSentAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

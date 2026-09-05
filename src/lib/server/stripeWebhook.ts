@@ -346,7 +346,7 @@ export interface StripeEventStore {
   createPaymentFailedNotification(args: {
     businessId: string;
     payload: Record<string, unknown>;
-  }): Promise<void>;
+  }): Promise<string | void>;
 }
 
 export type EventOutcome =
