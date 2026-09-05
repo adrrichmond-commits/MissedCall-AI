@@ -126,11 +126,24 @@ export async function requireRole(...allowed: UserRole[]): Promise<AuthContext> 
  * "trial expired" AuthError while reads, billing, and settings views keep
  * working. Paying accounts (plan starter/pro) are never gated — once a plan
  * is active the recorded trial window is moot.
+ *
+ * Phase 2 build #5: a live Stripe subscription is an equally valid grant.
+ * subscription_status='active' (or 'trialing', a Stripe-side trial) unlocks
+ * writes even when the recorded 14-day trial window has passed — the webhook
+ * sets it on customer.subscription.updated/created and requireActiveWrite
+ * re-reads it on every call (no caching). 'past_due' grants Stripe's grace
+ * period (Smart Retries in progress — the customer is mid-recovery, cutting
+ * them off mid-retry would be both hostile and dishonest about their state);
+ * 'canceled' does NOT — plan reverts to trial at that point and the expired-
+ * trial rule takes over.
  */
 export async function requireActiveWrite(...allowed: UserRole[]): Promise<AuthContext> {
   const ctx = await requireRole(...allowed);
   const plan = ctx.business.plan;
   if (plan === "starter" || plan === "pro") return ctx;
+  if (ctx.business.subscriptionStatus === "active" || ctx.business.subscriptionStatus === "trialing") {
+    return ctx;
+  }
   const trialEndsAt = ctx.business.trialEndsAt;
   if (trialEndsAt != null && trialEndsAt.getTime() <= Date.now()) {
     throw new AuthError(
