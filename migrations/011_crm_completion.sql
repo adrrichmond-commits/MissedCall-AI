@@ -44,6 +44,13 @@
 -- 1. Lead lifecycle: widen the status set
 -- ---------------------------------------------------------------------------
 ALTER TABLE leads ALTER COLUMN status TYPE text USING status::text;
+-- HOTFIX (lead, post-merge): 005/006 left a text+CHECK constraint on the OLD
+-- status set; the backfill below writes NEW values, so the old check must be
+-- dropped BEFORE the updates or every replay of 001→011 fails on
+-- "violates check constraint leads_status_check". (Caught applying to Neon —
+-- prod data holds booked/completed rows; local harness builds schema
+-- directly and never replays migrations, which is why tests missed it.)
+ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_status_check;
 UPDATE leads SET status = 'appointment_scheduled' WHERE status = 'booked';
 UPDATE leads SET status = 'won' WHERE status = 'completed';
 ALTER TABLE leads
