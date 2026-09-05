@@ -10,7 +10,7 @@ import {
   PriorityBadge,
   StatusBadge,
 } from "~/components/app/pageStates";
-import { formatDateTime, formatRelative } from "~/lib/format";
+import { formatDateTime, formatMoney, formatRelative } from "~/lib/format";
 
 export const Route = createFileRoute("/_app/dashboard")({
   loader: async () => {
@@ -27,8 +27,6 @@ export const Route = createFileRoute("/_app/dashboard")({
 
 function DashboardPage() {
   const data = Route.useLoaderData();
-  const convRate =
-    data.metrics.conversionRate == null ? null : Math.round(data.metrics.conversionRate * 100);
 
   return (
     <div>
@@ -37,7 +35,10 @@ function DashboardPage() {
         description="A live view of your missed-call leads, conversations, and booked work."
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {/* P3-D: Revenue Recovered — the primary KPI card */}
+      <RevenueCard revenue={data.revenue} />
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="New leads (7 days)"
           value={data.metrics.newLeadsThisWeek}
@@ -64,11 +65,11 @@ function DashboardPage() {
           href="/appointments"
         />
         <MetricCard
-          label="Conversion rate"
-          value={convRate == null ? "—" : `${convRate}%`}
+          label="Emergency leads"
+          value={data.metrics.emergencyLeads}
           tone="amber"
-          hint="Converted vs lost, all time"
-          href="/analytics"
+          hint={data.metrics.emergencyLeads > 0 ? "Open leads needing a callback today" : "No open emergencies"}
+          href="/leads?priority=emergency"
         />
       </div>
 
@@ -224,5 +225,108 @@ function MarkDoneButton({ taskId }: { taskId: string }) {
     >
       <span className="sr-only">Mark done</span>
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P3-D: Revenue Recovered — the primary KPI card
+// ---------------------------------------------------------------------------
+
+interface RevenueCardData {
+  week: { wonLeads: number; recoveredCents: number };
+  month: { wonLeads: number; recoveredCents: number };
+  allTime: { wonLeads: number; recoveredCents: number };
+  revenuePerLeadCents: number | null;
+  conversionRate: number | null;
+  recoveryRate: number | null;
+  appointmentsPerRecoveredLead: number | null;
+  hasRecovered: boolean;
+}
+
+function pct(rate: number | null): string {
+  if (rate == null) return "—";
+  return `${Math.round(rate * 100)}%`;
+}
+
+function ratioLabel(value: number | null): string {
+  if (value == null) return "—";
+  // One decimal is enough for a plumber's gut check ("1.3 jobs per lead").
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isFinite(rounded) ? String(rounded) : "—";
+}
+
+/**
+ * One card, not an analytics page: the three periods of recovered revenue up
+ * front, the plain-language ratios underneath. All money arrives as USD cents
+ * from the server and is formatted client-side via formatMoney.
+ */
+function RevenueCard({ revenue }: { revenue: RevenueCardData }) {
+  return (
+    <section
+      aria-label="MissedCall AI generated revenue"
+      className="rounded-xl border border-brand-200 bg-gradient-to-br from-brand-50 to-white p-5"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-slate-900">
+          MissedCall AI generated revenue
+        </h2>
+        <p className="text-xs text-slate-400">From jobs won off recovered calls</p>
+      </div>
+
+      {!revenue.hasRecovered ? (
+        <p className="mt-4 rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+          No recovered revenue yet — your first won job from a recovered call will show here.
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+          {(
+            [
+              { label: "This week", sub: "jobs won from recovered calls", p: revenue.week },
+              { label: "This month", sub: "won since the 1st, your timezone", p: revenue.month },
+              { label: "All time", sub: "every job won since you started", p: revenue.allTime },
+            ] as const
+          ).map((item) => (
+            <div key={item.label} className="rounded-lg bg-white/70 px-4 py-3 ring-1 ring-brand-100">
+              <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+                {item.label}
+              </p>
+              <p className="mt-1 text-2xl font-bold text-slate-900">
+                {formatMoney(item.p.recoveredCents)}
+              </p>
+              <p className="text-xs text-slate-500">
+                {item.sub} · {item.p.wonLeads}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 border-t border-brand-100 pt-3 text-xs sm:grid-cols-4">
+        <div>
+          <dt className="text-slate-500">Revenue per lead</dt>
+          <dd className="font-semibold text-slate-900">
+            {formatMoney(revenue.revenuePerLeadCents)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Conversion rate</dt>
+          <dd className="font-semibold text-slate-900" title="Won jobs ÷ all captured leads, all time">
+            {pct(revenue.conversionRate)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Missed-call recovery</dt>
+          <dd className="font-semibold text-slate-900" title="Missed calls we engaged ÷ captured missed calls, all time">
+            {pct(revenue.recoveryRate)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Appointments per lead</dt>
+          <dd className="font-semibold text-slate-900" title="Appointments booked ÷ recovered missed-call leads">
+            {ratioLabel(revenue.appointmentsPerRecoveredLead)}
+          </dd>
+        </div>
+      </dl>
+    </section>
   );
 }
