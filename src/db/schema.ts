@@ -278,6 +278,49 @@ export interface MessageClassification {
   preferredTimeHint?: string | null;
   /** Keys of the domain rules that fired (rule engine only). */
   matchedRules?: string[];
+  /**
+   * P3-B: draft reply text produced this turn by the classification pipeline
+   * (src/lib/server/classifyPipeline.ts). Only text that passed the KB
+   * screening contract gets here — emergencies carry the KB safety script,
+   * screened LLM answers carry their approved text, and replaced advice
+   * carries the honest human-routing fallback. Null when no reply was due.
+   */
+  reply?: string | null;
+  /**
+   * P3-B pipeline stamps (all optional — jsonb only, no migration; rows
+   * written before P3-B are unaffected). See src/lib/server/classifyPipeline.ts.
+   *
+   *   kbVersion            KB revision that fed this parse ("kb-v1") — the
+   *                        knowledge-base counterpart of `model`/`classifier`.
+   *   tier                 which tier produced the result: "llm" | "rules".
+   *                        Same value as `classifier`; kept explicit so the
+   *                        tier selection is auditable even on legacy shapes.
+   *   tierReason           why that tier ran: "primary" (LLM configured and
+   *                        succeeded), "default" (no LLM_API_KEY — rules are
+   *                        the launch default), "backstop" (LLM configured
+   *                        but errored/returned nothing this turn).
+   *   emergencyKey         matched KB emergency class key (kb emergencies.ts),
+   *                        null when no KB emergency matched. An LLM-only
+   *                        emergency (no KB entry) stays null here but still
+   *                        forces urgency/priority emergency downstream.
+   *   emergencySeverity    matched KB emergency severity (critical > severe >
+   *                        elevated), null when emergencyKey is null.
+   *   afterHoursEscalation emergency detected outside the business's configured
+   *                        hours (KB afterHoursEscalation policy AND the time
+   *                        fact). True also when hours could not be read
+   *                        (fail toward escalation). Only set on emergencies.
+   *   replySource          where the auto-reply text came from, when one was
+   *                        produced: kb_emergency_script | kb_emergency_generic
+   *                        | kb_faq_pricing | llm_screened | human_routing.
+   *                        Never the raw LLM text without a screening pass.
+   */
+  kbVersion?: string;
+  tier?: 'llm' | 'rules';
+  tierReason?: 'primary' | 'default' | 'backstop';
+  emergencyKey?: string | null;
+  emergencySeverity?: 'critical' | 'severe' | 'elevated' | null;
+  afterHoursEscalation?: boolean;
+  replySource?: string | null;
 }
 
 // ---------------------------------------------------------------------------
