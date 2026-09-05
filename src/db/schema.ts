@@ -78,7 +78,13 @@ export type NotificationType =
   | 'lead_booked'
   | 'appointment_requested'
   | 'appointment_confirmed'
-  | 'appointment_declined';
+  | 'appointment_declined'
+  /**
+   * Phase 2 build #5 (migration 009): invoice.payment_failed creates this
+   * in-app notification — the honest channel that exists without any
+   * provider keys (email/SMS delivery remains provider-gated).
+   */
+  | 'payment_failed';
 
 // ---------------------------------------------------------------------------
 // Core: businesses, users, auth tokens
@@ -105,6 +111,14 @@ export interface Business {
   trialEndsAt: Date | null;
   /** Phase 1 placeholder state; Stripe lifecycle takes this over in Phase 2. */
   subscriptionStatus: string | null;
+  /**
+   * Phase 2 build #5 (migration 009): Stripe identity + lifecycle, written
+   * only by the webhook path. subscription_status is CHECK-constrained to
+   * 'active' | 'trialing' | 'past_due' | 'canceled' | NULL.
+   */
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  currentPeriodEnd: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
