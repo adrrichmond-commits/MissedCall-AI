@@ -20,6 +20,11 @@ import {
   toLifecycleStatus,
 } from "~/lib/server/leadLifecycle";
 import { maybeCreateFollowUpTaskForTransition } from "~/lib/server/followUps";
+import {
+  computePeriodBounds,
+  funnelStages,
+  type FunnelCounts,
+} from "~/lib/server/revenue";
 import type { LeadStatus } from "~/db/schema";
 
 const LEAD_STATUSES = LEAD_LIFECYCLE_STATUSES;
@@ -79,6 +84,22 @@ export interface DashboardData {
     /** Open (not won/lost) leads marked priority='emergency'. */
     emergencyLeads: number;
   };
+  /**
+   * P3-D Revenue Recovered — the primary KPI card. Won leads' summed
+   * pipeline_value_cents for this week / this month / all time, plus the
+   * guarded ratios (all null-safe; the UI renders "—" for null).
+   */
+  revenue: {
+    week: { wonLeads: number; recoveredCents: number };
+    month: { wonLeads: number; recoveredCents: number };
+    allTime: { wonLeads: number; recoveredCents: number };
+    revenuePerLeadCents: number | null;
+    conversionRate: number | null;
+    recoveryRate: number | null;
+    appointmentsPerRecoveredLead: number | null;
+    /** True when nothing has been won yet — drives the card's empty state. */
+    hasRecovered: boolean;
+  };
   /** P3-C: open follow-up tasks — the callback queue (count + first rows). */
   followUps: FollowUpsData;
   recentLeads: {
@@ -130,7 +151,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
           })),
         };
       })();
-      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments] =
+      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments, revenue] =
         await Promise.all([
           q.countLeadsCreatedSince(businessId, weekAgo),
           q.countConversationsByStatus(businessId),
@@ -141,6 +162,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
           q.countLeadsByPriority(businessId),
           q.listLeads(businessId, {}, { limit: 6, order: "desc" }),
           q.listAppointments(businessId, {}, { limit: 5, order: "asc" }),
+          q.revenueMetrics(businessId, ctx.business.timezone),
         ]);
       const withConv = await q.leadIdsWithConversations(businessId, recentLeads.map((l) => l.id));
       return {
@@ -157,6 +179,16 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
                 ? leadStatusCounts.won / (leadStatusCounts.won + leadStatusCounts.lost)
                 : null,
             emergencyLeads: priorityCounts.emergency,
+          },
+          revenue: {
+            week: revenue.week,
+            month: revenue.month,
+            allTime: revenue.allTime,
+            revenuePerLeadCents: revenue.revenuePerLeadCents,
+            conversionRate: revenue.conversionRate,
+            recoveryRate: revenue.recoveryRate,
+            appointmentsPerRecoveredLead: revenue.appointmentsPerRecoveredLead,
+            hasRecovered: revenue.allTime.recoveredCents > 0 || revenue.allTime.wonLeads > 0,
           },
           followUps: followUpsRes,
           recentLeads: recentLeads.map((l) => ({
@@ -889,6 +921,10 @@ export interface AnalyticsData {
     /** Of those, leads that were won (status booked/completed). */
     booked: number;
   };
+  /** P3-D: recovered-revenue summary (same engine as the dashboard card). */
+  revenue: DashboardData["revenue"];
+  /** P3-D: ordered captured-calls funnel stages. */
+  funnel: { key: string; label: string; count: number }[];
 }
 
 export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
@@ -907,6 +943,10 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
           q.missedCallRecoveryStats(businessId),
         ]);
       const totalLeads = Object.values(leadsByStatus).reduce((a, b) => a + b, 0);
+      const [revenue, funnel] = await Promise.all([
+        q.revenueMetrics(businessId, ctx.business.timezone),
+        q.revenueFunnelCounts(businessId),
+      ]);
       return {
         ok: true,
         data: {
@@ -918,6 +958,17 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
           totalMessages,
           openPipelineValueCents: pipeline,
           recovery,
+          revenue: {
+            week: revenue.week,
+            month: revenue.month,
+            allTime: revenue.allTime,
+            revenuePerLeadCents: revenue.revenuePerLeadCents,
+            conversionRate: revenue.conversionRate,
+            recoveryRate: revenue.recoveryRate,
+            appointmentsPerRecoveredLead: revenue.appointmentsPerRecoveredLead,
+            hasRecovered: revenue.allTime.recoveredCents > 0 || revenue.allTime.wonLeads > 0,
+          },
+          funnel: funnelStages(funnel),
         },
       };
     } catch (e) {
@@ -925,3 +976,43 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// P3-D: captured-calls funnel (dashboard revenue card + P4-A funnel tracking)
+// ---------------------------------------------------------------------------
+export interface FunnelData {
+  /** Ordered stages: calls received → handled by AI → … → jobs won. */
+  stages: { key: string; label: string; count: number }[];
+  /** Period bounds the metrics were computed against (ISO strings). */
+  computedAt: string;
+  weekStart: string;
+  monthStart: string;
+}
+export const getRevenueFunnelFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<AppResult<FunnelData>> => {
+    try {
+      const ctx = await requireAuth();
+      const businessId = ctx.business.id;
+      const [funnel, bounds] = await Promise.all([
+        q.revenueFunnelCounts(businessId),
+        Promise.resolve(computePeriodBounds(new Date(), ctx.business.timezone)),
+      ]);
+      const stages = funnelStagesFor(funnel);
+      return {
+        ok: true,
+        data: {
+          stages,
+          computedAt: new Date().toISOString(),
+          weekStart: bounds.weekStart.toISOString(),
+          monthStart: bounds.monthStart.toISOString(),
+        },
+      };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  },
+);
+/** Ordered funnel stages for the wire (stage defs live in the pure module). */
+function funnelStagesFor(funnel: FunnelCounts): { key: string; label: string; count: number }[] {
+  return funnelStages(funnel);
+}

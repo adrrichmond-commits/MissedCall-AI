@@ -93,6 +93,7 @@ function AnalyticsPage() {
   }));
   const weekdayMax = Math.max(1, ...data.appointmentsByWeekday);
   const weekdayTotal = data.appointmentsByWeekday.reduce((a, b) => a + b, 0);
+  const funnelMax = Math.max(1, ...data.funnel.map((s) => s.count));
 
   return (
     <div>
@@ -134,7 +135,75 @@ function AnalyticsPage() {
         )}
       </section>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      {/* P3-D: recovered-revenue summary (all time + periods) */}
+      <section className="rounded-xl border border-brand-200 bg-white p-5" aria-label="Recovered revenue">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-900">Recovered revenue</h2>
+          <p className="text-xs text-slate-400">Won jobs, by when they closed</p>
+        </div>
+        <p className="mt-0.5 text-xs text-slate-500">
+          What jobs won from MissedCall AI captured work were worth — the actual invoice when you
+          entered one, otherwise your quote, otherwise the typical range for the job.
+        </p>
+        {data.revenue == null || (!data.revenue.hasRecovered && data.totalLeads === 0) ? (
+          <p className="mt-4 rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+            Revenue tracking starts with your first lead.
+          </p>
+        ) : (
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            {(
+              [
+                { label: "This week", p: data.revenue.week },
+                { label: "This month", p: data.revenue.month },
+                { label: "All time", p: data.revenue.allTime },
+              ] as const
+            ).map((item) => (
+              <div key={item.label}>
+                <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+                  {item.label}
+                </p>
+                <p className="mt-1 text-2xl font-bold text-slate-900">
+                  {formatMoney(item.p.recoveredCents)}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {item.p.wonLeads}
+                  {item.p.wonLeads === 1 ? " job won" : " jobs won"}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* P3-D: the captured-calls funnel, top to bottom */}
+      <section className="mt-4 rounded-xl border border-slate-200 bg-white p-5" aria-label="Calls to jobs funnel">
+        <h2 className="text-sm font-semibold text-slate-900">From calls to jobs</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Every stage, all time. Today the assistant captures missed calls by text-back; when the
+          AI receptionist answers live calls, they enter at the top too.
+        </p>
+        <ol className="mt-4 space-y-2">
+          {data.funnel.map((s, i) => (
+            <li key={s.key}>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-700">
+                  <span className="mr-2 inline-block w-5 text-right text-xs text-slate-400">{i + 1}.</span>
+                  {s.label}
+                </span>
+                <span className="font-semibold text-slate-900">{s.count}</span>
+              </div>
+              <div className="mt-1 h-2 rounded-full bg-slate-100">
+                <div
+                  className={`h-2 rounded-full ${s.key === "won" ? "bg-green-500" : "bg-brand-500"}`}
+                  style={{ width: `${funnelMax === 0 ? 0 : Math.max(2, Math.round((s.count / funnelMax) * 100))}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-5">
           <p className="text-sm font-medium text-slate-600">Total leads</p>
           <p className="mt-2 text-2xl font-bold text-slate-900">{data.totalLeads}</p>
