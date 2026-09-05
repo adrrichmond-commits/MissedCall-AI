@@ -36,6 +36,7 @@ export interface UpdateLeadInput {
   status?: LeadStatus;
   serviceNeed?: string;
   urgency?: LeadUrgency;
+  priority?: LeadPriority;
   contactName?: string;
   contactPhone?: string;
   contactEmail?: string | null;
@@ -248,6 +249,7 @@ const LEAD_PATCH_COLUMNS = [
   "status",
   "serviceNeed",
   "urgency",
+  "priority",
   "contactName",
   "contactPhone",
   "contactEmail",

@@ -1,5 +1,5 @@
 /**
- * Missed-call text-back flow (Phase 2 build #4 pre-wire).
+ * Missed-call text-back flow (Phase 2 build #4 pre-wire; P3-B rewiring).
  *
  * THE FLOW: a lead with source='missed_call' is captured. When Twilio is
  * configured (and the number is not opted out) the text-back template goes
@@ -12,6 +12,16 @@
  * send to a phone present in sms_opt_outs for the business — checked before
  * every send. See migration 008's header and src/db/queries/smsComms.ts.
  *
+ * P3-B (classification + advice pipeline): inbound SMS is classified by
+ * src/lib/server/classifyPipeline.ts — LLM tier (KB guardrail prompt, output
+ * post-screened) → rules tier default without LLM_API_KEY → rules backstop on
+ * LLM error. Replies are produced honestly: KB emergency scripts verbatim,
+ * KB FAQ policies, screened LLM text, or the human-routing fallback. When the
+ * result is emergency-severity, the flow escalates: the lead (when linked) is
+ * marked emergency, and an emergency-payload notification goes through the
+ * EXISTING notification path (createNotification + queueNotificationEmail) —
+ * no parallel notification system.
+ *
  * Server-only: imports the query layer and the env-gated providers.
  */
 import { normalizePhone, parseSmsCommand } from "~/lib/smsCommands";
@@ -22,8 +32,12 @@ import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { isLlmConfigured, llmComplete, readLlmConfig } from "./llm";
 import { isSmsConfigured, sendSms } from "./sms";
-import { classifyInboundText } from "./classify";
-import type { MessageClassification } from "~/db/schema";
+import {
+  runClassificationPipeline,
+  type PipelineInput,
+  type PipelineLlm,
+  type PipelineResult,
+} from "./classifyPipeline";
 
 /** What actually happened with the text-back for one captured lead. */
 export type TextBackOutcome = "sent" | "opted_out" | "not_configured" | "failed";
@@ -131,10 +145,15 @@ export async function sendTextBack(
 
 /**
  * Handle an inbound SMS for a business: STOP/START/HELP handling with
- * opt-out persistence, then classification — LLM primary when configured,
- * rule engine (src/lib/server/classify.ts) as the default without an LLM
- * and as the backstop when the configured LLM fails. The message is ALWAYS
- * stored first; classification is stamped honestly with which engine ran.
+ * opt-out persistence, then classification through the P3-B pipeline —
+ * LLM tier when configured (KB-guardrailed, post-screened), rule engine
+ * (src/lib/server/classify.ts + KB) as the default without an LLM and as the
+ * backstop when the configured LLM fails. The message is ALWAYS stored first;
+ * classification is stamped honestly with which tier ran (classifier/tier/
+ * tierReason/kbVersion). Emergency-severity results escalate: the linked
+ * lead is re-stamped emergency and an emergency-payload notification goes
+ * out through the existing path. An auto-reply is sent only when the
+ * pipeline produced one and the number is not opted out.
  */
 export async function handleInboundSms(args: {
   businessId: string;
@@ -171,33 +190,167 @@ export async function handleInboundSms(args: {
     await tryReplyCommand(args, SMS_TEMPLATES.help);
   }
 
-  // 3. Classification — LLM primary when configured, rules otherwise.
-  //    The message starts 'unclassified'; 'delivered' + a classification
-  //    payload is stamped only when an engine actually produced one. Every
-  //    stored payload honestly records which engine ran (`classifier`).
+  // 3. Classification through the P3-B pipeline. The message starts
+  //    'unclassified'; 'delivered' + a classification payload is stamped only
+  //    when the pipeline actually produced one. Every stored payload honestly
+  //    records which tier ran and why (classifier + tier + tierReason +
+  //    kbVersion). Expected engine failure never throws: an LLM error
+  //    degrades to the rules tier for THIS turn (tierReason "backstop") and
+  //    is logged.
   if (!command) {
-    if (isLlmConfigured()) {
-      const classification = await classifyInboundMessage(args.body);
-      if (classification) {
-        await q.setMessageClassification(args.businessId, message.id, classification);
-        status = "delivered";
-      } else {
-        // LLM configured but failed (network/HTTP/timeout/bad JSON): the
-        // rules backstop keeps the pipeline useful — never a silent drop.
-        const ruleResult = classifyInboundText(args.body);
-        await q.setMessageClassification(args.businessId, message.id, ruleResult);
-        status = "delivered";
-        console.log("[textback] LLM classification failed - rules backstop applied (confidence " + ruleResult.confidence.toFixed(2) + ")");
-      }
-    } else {
-      // No LLM configured: rules are the DEFAULT engine (build #7), so the
-      // product classifies honestly without LLM_API_KEY.
-      const ruleResult = classifyInboundText(args.body);
-      await q.setMessageClassification(args.businessId, message.id, ruleResult);
-      status = "delivered";
+    const pipeline = await runInboundPipeline(args.businessId, args.body);
+    await q.setMessageClassification(args.businessId, message.id, pipeline.classification);
+    status = "delivered";
+    if (pipeline.tierReason === "backstop") {
+      console.log(
+        "[textback] LLM tier failed - rules backstop applied (confidence " +
+          (pipeline.classification.confidence ?? 0).toFixed(2) +
+          ")",
+      );
+    }
+
+    // 4. Emergency auto-escalation (fail toward emergency; never a parallel
+    //    notification system — the in-app row + fire-and-forget email ARE the
+    //    notification path, same as new_lead).
+    if (pipeline.classification.urgency === "emergency") {
+      await escalateEmergency(args, pipeline);
+    }
+
+    // 5. Auto-reply: only the pipeline's screened/KB-sourced text, and never
+    //    to an opted-out phone. Fire-and-forget: reply failure is logged and
+    //    never fails the stored classification.
+    if (pipeline.reply && pipeline.reply.text) {
+      await tryPipelineReply(args, pipeline.reply.text);
     }
   }
   return { command, status };
+}
+
+/**
+ * Build the pipeline input from business settings + run it.
+ *
+ * LLM tier seam: when LLM_API_KEY is configured, production passes a
+ * PipelineLlm wrapping llmComplete; without the key, llm is null and the
+ * rules tier is the DEFAULT (the keyless launch configuration). Timezone +
+ * hours come from the existing business settings (businesses.timezone +
+ * business_hours); a failed read fails toward after-hours (safe direction).
+ */
+async function runInboundPipeline(
+  businessId: string,
+  body: string,
+): Promise<PipelineResult> {
+  const llm: PipelineLlm | null = isLlmConfigured()
+    ? {
+        model: readLlmConfig()?.model ?? "unknown",
+        complete: (system, user, opts) =>
+          llmComplete(system, user, {
+            maxTokens: opts?.maxTokens ?? 500,
+            timeoutMs: opts?.timeoutMs ?? 15_000,
+            temperature: 0,
+          }),
+      }
+    : null;
+
+  const [business, hours] = await Promise.all([
+    q.getBusiness(businessId).catch(() => null),
+    q.listBusinessHours(businessId).catch(() => null),
+  ]);
+
+  const input: PipelineInput = {
+    body,
+    now: new Date(),
+    timezone: business?.timezone ?? null,
+    hours: hours && hours.length > 0 ? hours : null,
+    llm,
+  };
+  return runClassificationPipeline(input);
+}
+
+/**
+ * Emergency auto-escalation for an emergency-severity classification:
+ *   - re-stamp the linked lead (conversation → lead) to priority='emergency'
+ *     + urgency='emergency' so triage ordering picks it up immediately;
+ *   - record an emergency-payload notification through the EXISTING
+ *     createNotification + queueNotificationEmail path with
+ *     escalation metadata (afterHours, emergencyKey/severity, replySource).
+ *
+ * Best-effort by design: escalation failure is logged and never fails the
+ * stored classification (the message data already survives).
+ */
+async function escalateEmergency(
+  args: { businessId: string; conversationId: string },
+  pipeline: PipelineResult,
+): Promise<void> {
+  const c = pipeline.classification;
+  try {
+    // Link the lead when the conversation has one (text-back conversations
+    // are created against a lead; inbound webhooks may or may not be).
+    const conversation = await q.getConversation(args.businessId, args.conversationId);
+    const leadId = conversation?.leadId ?? null;
+    if (leadId) {
+      await q.updateLead(args.businessId, leadId, {
+        priority: "emergency",
+        urgency: "emergency",
+      });
+    }
+
+    const payload = {
+      leadId: leadId ?? undefined,
+      serviceNeed: c.serviceNeed ?? "Emergency (unspecified)",
+      priority: "emergency",
+      emergency: true,
+      emergencyKey: c.emergencyKey ?? undefined,
+      emergencySeverity: c.emergencySeverity ?? undefined,
+      afterHours: pipeline.afterHours,
+      afterHoursEscalation: pipeline.afterHoursEscalation,
+      replySource: c.replySource ?? undefined,
+      classifier: c.classifier ?? undefined,
+    };
+    const notification = await q.createNotification(args.businessId, {
+      type: "new_lead",
+      payload,
+    });
+    queueNotificationEmail({
+      businessId: args.businessId,
+      notificationId: notification.id,
+      type: "new_lead",
+      payload,
+      store: notificationEmailStore,
+    });
+    console.log(
+      "[textback] EMERGENCY escalated (key " +
+        (c.emergencyKey ?? "unclassified") +
+        ", afterHours " +
+        pipeline.afterHours +
+        ", lead " +
+        (leadId ?? "none") +
+        ")",
+    );
+  } catch (err) {
+    console.log("[textback] emergency escalation failed (classification stored): " + String(err));
+  }
+}
+
+/** Best-effort screened auto-reply send; opt-out rule enforced here too. */
+async function tryPipelineReply(
+  args: { businessId: string; conversationId: string; from: string },
+  body: string,
+): Promise<void> {
+  try {
+    if (await q.isSmsOptedOut(args.businessId, args.from)) return;
+    if (!isSmsConfigured()) return;
+    await sendSms({ to: args.from, body });
+    // Record the outbound reply on the conversation thread honestly.
+    await q.appendMessage({
+      businessId: args.businessId,
+      conversationId: args.conversationId,
+      direction: "outbound",
+      body,
+      status: "sent",
+    });
+  } catch (err) {
+    console.log("[textback] auto-reply failed: " + String(err));
+  }
 }
 
 async function tryReplyCommand(
@@ -213,49 +366,6 @@ async function tryReplyCommand(
   } catch (err) {
     console.log("[textback] command reply failed: " + String(err));
   }
-}
-
-async function classifyInboundMessage(body: string): Promise<MessageClassification | null> {
-  if (!isLlmConfigured()) return null;
-  const system = [
-    "You are an SMS intake classifier for a plumbing company.",
-    "Extract structured data from one customer text message.",
-    'Return STRICT JSON only: {"serviceNeed": string|null, "urgency": "emergency"|"same_day"|"within_week"|"flexible"|null, "priority": "emergency"|"high"|"normal"|null, "contactName": string|null, "contactEmail": string|null, "serviceAddress": string|null, "safetyConcern": boolean|null, "notes": string|null}.',
-    "urgency/priority: emergency = active flooding, burst pipe, sewer backup, gas smell, cannot shut off water; high = water heater failure, significant leak, no working toilet, major blockage; normal = everything else.",
-    "safetyConcern = true only for gas smell, electrical hazard, or uncontrolled water.",
-    "Omit nothing the message supports; use null for anything not stated. Never invent values.",
-  ].join(" ");
-  try {
-    const raw = await llmComplete(system, body, { maxTokens: 300, temperature: 0, timeoutMs: 15_000 });
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start === -1 || end <= start) return null;
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
-    const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
-    const model = readLlmConfig()?.model ?? "unknown";
-    return {
-      serviceNeed: str(parsed.serviceNeed),
-      urgency: pickUrgency(parsed.urgency),
-      priority: pickPriority(parsed.priority),
-      contactName: str(parsed.contactName),
-      contactEmail: str(parsed.contactEmail),
-      serviceAddress: str(parsed.serviceAddress),
-      safetyConcern: typeof parsed.safetyConcern === "boolean" ? parsed.safetyConcern : null,
-      notes: str(parsed.notes),
-      model,
-      classifier: "llm" as const,
-    };
-  } catch (err) {
-    console.log("[textback] LLM classification failed (rules backstop applies): " + String(err));
-    return null;
-  }
-}
-
-function pickUrgency(v: unknown): "emergency" | "same_day" | "within_week" | "flexible" | null {
-  return v === "emergency" || v === "same_day" || v === "within_week" || v === "flexible" ? v : null;
-}
-function pickPriority(v: unknown): "emergency" | "high" | "normal" | null {
-  return v === "emergency" || v === "high" || v === "normal" ? v : null;
 }
 
 /** Share one normalize implementation; fall back to the stored string. */
