@@ -42,6 +42,7 @@ import {
   findBusinessIdByStripeCustomer,
   findBusinessIdByStripeSubscription,
   markStripeEventProcessed,
+  recordBillingEvent,
 } from "~/db/queries/stripe";
 import type { StripeEventStore } from "~/lib/server/stripeWebhook";
 import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
@@ -92,6 +93,8 @@ const neonStore: StripeEventStore = {
       }
       return notificationId;
     }),
+  // P3-F: billing history ledger — append after the handler's writes commit.
+  recordBillingEvent: (args) => recordBillingEvent(args),
 };
 
 async function handlePost(request: Request): Promise<Response> {

@@ -1,6 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { cancelSubscriptionFn, getBillingOverviewFn, type BillingOverview } from "~/lib/server/billingFns";
+import {
+  cancelSubscriptionFn,
+  getBillingDetailsFn,
+  getBillingOverviewFn,
+  reactivateSubscriptionFn,
+  type BillingOverview,
+  type BillingOverviewP3F,
+} from "~/lib/server/billingFns";
 import { formatPlanPrice } from "~/lib/pricing";
 import { PageHeader, PageLoading, ErrorState } from "~/components/app/pageStates";
 import { Badge } from "~/components/ui/Badge";
@@ -241,6 +248,103 @@ function BillingPage() {
           )
         ) : null}
       </section>
+    <BillingDetailsSection />
+      </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P3-F: usage vs limits, cancel banner (cancel_at_period_end), billing history
+// ---------------------------------------------------------------------------
+function UsageBar({ row }: { row: BillingOverviewP3F["usage"][number] }) {
+  const pct = Math.min(100, row.percent);
+  return (
+    <div>
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-medium text-slate-700">{row.label}</span>
+        <span className={row.atLimit ? "font-semibold text-red-600" : "text-slate-500"}>
+          {row.usageText}
+          {row.atLimit ? " — limit reached" : ""}
+        </span>
+      </div>
+      <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full rounded-full ${row.atLimit ? "bg-red-500" : "bg-brand-500"}`}
+          style={{ width: pct + "%" }}
+        />
+      </div>
     </div>
+  );
+}
+
+function BillingDetailsSection() {
+  const [details, setDetails] = useState<BillingOverviewP3F | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const load = () => {
+    getBillingDetailsFn().then((res) => {
+      if (res.ok) setDetails(res.data);
+    }).catch(() => undefined);
+  };
+  useState(() => load());
+  if (!details) return null;
+  const reactivate = async () => {
+    setBusy(true);
+    const res = await reactivateSubscriptionFn();
+    setBusy(false);
+    setNote(res.ok ? res.data.message : res.error);
+    load();
+  };
+  return (
+    <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <h3 className="text-base font-semibold text-slate-900">Usage this billing period</h3>
+      <div className="mt-4 space-y-4">
+        {details.usage.map((row) => (
+          <UsageBar key={row.axis} row={row} />
+        ))}
+      </div>
+      {details.usage.some((r) => r.atLimit) ? (
+        <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          You've used a plan allowance this month. Upgrade on the plan cards above to keep every recovery text flowing —
+          emergency texts are never held back.
+        </p>
+      ) : null}
+      {details.cancelAtPeriodEnd ? (
+        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-amber-800">
+            Cancellation scheduled — service continues for{" "}
+            <strong>{details.daysUntilServiceEnd ?? 0} more days</strong>. Your data is preserved.
+          </p>
+          <Button variant="primary" disabled={busy} onClick={reactivate}>
+            Reactivate
+          </Button>
+        </div>
+      ) : null}
+      {note ? <p className="mt-3 text-sm text-slate-600">{note}</p> : null}
+      <h3 className="mt-8 text-base font-semibold text-slate-900">Billing history</h3>
+      {details.billingConfigured ? null : (
+        <p className="mt-2 text-sm text-slate-500">
+          Billing isn't configured in this deployment yet — plan changes happen through the Stripe checkout links above,
+          and this ledger fills in as payments and lifecycle changes land. No fake records here.
+        </p>
+      )}
+      {details.history.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-500">No billing events yet.</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-slate-100">
+          {details.history.map((e) => (
+            <li key={e.id} className="flex items-start justify-between gap-3 py-2.5">
+              <div>
+                <p className="text-sm font-medium text-slate-700">{e.description ?? e.type}</p>
+                <p className="text-xs text-slate-400">
+                  {e.type} · {e.source}
+                </p>
+              </div>
+              <time className="whitespace-nowrap text-xs text-slate-400">{e.occurredAt.slice(0, 10)}</time>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

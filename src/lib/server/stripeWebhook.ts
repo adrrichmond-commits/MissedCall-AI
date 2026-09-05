@@ -13,8 +13,8 @@
  * configured price IDs (starter/pro), and an unmapped price is reported
  * honestly instead of guessed. When no price env is set, a fallback maps by
  * unit_amount against PLANS.priceCents from src/lib/pricing.ts (the single
- * pricing source of truth) — a $149/mo price is Starter, a $249/mo price is
- * Pro, anything else is left untouched.
+ * pricing source of truth) — the Starter price maps to starter and the Pro
+ * price to pro; anything else is left untouched.
  *
  * HONESTY RULE: without STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET,
  * isStripeConfigured() is false and the webhook route answers 503 without
@@ -276,7 +276,8 @@ export function mapSubscriptionStatus(status: string): WebhookSubscriptionStatus
  * Map a Stripe price to the locked plan tier. Explicit env price IDs win
  * (STRIPE_PRICE_STARTER / STRIPE_PRICE_PRO); without them, the price's
  * unit_amount must exactly match a priceCents value from the locked pricing
- * module (14900 → starter, 24900 → pro). Anything else returns null — an
+ * module (the Starter priceCents → starter, the Pro priceCents → pro).
+ * Anything else returns null — an
  * unmapped price is never guessed into a tier.
  */
 export function planForStripePrice(price: {
@@ -347,6 +348,18 @@ export interface StripeEventStore {
     businessId: string;
     payload: Record<string, unknown>;
   }): Promise<string | void>;
+  /**
+   * P3-F: append to the business's billing_events ledger. Called ONLY after
+   * the handler's writes commit and only for business-resolved events, so
+   * the history shows exactly what actually happened — nothing invented.
+   * Best-effort: ledger failure is logged and never fails the webhook.
+   */
+  recordBillingEvent(args: {
+    businessId: string;
+    type: "checkout_completed" | "subscription_updated" | "subscription_canceled" | "payment_failed";
+    description: string;
+    payload: Record<string, unknown>;
+  }): Promise<void>;
 }
 
 export type EventOutcome =
@@ -459,6 +472,16 @@ async function handleSubscriptionUpdated(
     plan,
     subscriptionId: sub.id,
   });
+  try {
+    await store.recordBillingEvent({
+      businessId,
+      type: "checkout_completed",
+      description: describeSubscriptionSync(sub),
+      payload: { subscriptionId: sub.id, status: sub.status, plan: plan ?? null },
+    });
+  } catch (err) {
+    console.log("[stripe] billing_events append failed (activation unaffected): " + String(err));
+  }
   return {
     handled: true,
     action: "processed",
@@ -490,6 +513,16 @@ async function handleSubscriptionDeleted(
     plan: "trial",
     subscriptionId: sub.id,
   });
+  try {
+    await store.recordBillingEvent({
+      businessId,
+      type: "subscription_canceled",
+      description: "subscription " + sub.id + " canceled - plan reset to trial, data preserved",
+      payload: { subscriptionId: sub.id },
+    });
+  } catch (err) {
+    console.log("[stripe] billing_events append failed (cancel unaffected): " + String(err));
+  }
   return {
     handled: true,
     action: "processed",
@@ -532,6 +565,16 @@ async function handlePaymentFailed(
       hostedInvoiceUrl: invoice.hosted_invoice_url,
     },
   });
+  try {
+    await store.recordBillingEvent({
+      businessId,
+      type: "payment_failed",
+      description: "invoice " + invoice.id + " payment failed - marked past_due",
+      payload: { invoiceId: invoice.id, amountDue: invoice.amount_due, attemptCount: invoice.attempt_count },
+    });
+  } catch (err) {
+    console.log("[stripe] billing_events append failed (notification unaffected): " + String(err));
+  }
   return {
     handled: true,
     action: "processed",
