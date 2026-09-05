@@ -4,8 +4,8 @@
  * POST /api/webhooks/twilio — receives Twilio's form-encoded inbound message
  * callbacks, validates the X-Twilio-Signature HMAC (only when credentials are
  * present), stores the message honestly, runs STOP/START/HELP handling with
- * opt-out persistence, and triggers LLM classification when the LLM is
- * configured (status 'unclassified' otherwise — never an invented parse).
+ * opt-out persistence, and classifies: LLM when configured, rule engine as
+ * the default/backstop otherwise (build #7) — never an invented parse.
  *
  * HONESTY RULE: without TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN the route
  * answers 503 with a clear JSON error — it never accepts or processes

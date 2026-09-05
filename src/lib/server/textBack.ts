@@ -22,6 +22,7 @@ import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { isLlmConfigured, llmComplete, readLlmConfig } from "./llm";
 import { isSmsConfigured, sendSms } from "./sms";
+import { classifyInboundText } from "./classify";
 import type { MessageClassification } from "~/db/schema";
 
 /** What actually happened with the text-back for one captured lead. */
@@ -130,8 +131,10 @@ export async function sendTextBack(
 
 /**
  * Handle an inbound SMS for a business: STOP/START/HELP handling with
- * opt-out persistence, then LLM classification when configured. The message
- * is ALWAYS stored first — honest 'unclassified' when no LLM exists.
+ * opt-out persistence, then classification — LLM primary when configured,
+ * rule engine (src/lib/server/classify.ts) as the default without an LLM
+ * and as the backstop when the configured LLM fails. The message is ALWAYS
+ * stored first; classification is stamped honestly with which engine ran.
  */
 export async function handleInboundSms(args: {
   businessId: string;
@@ -168,11 +171,29 @@ export async function handleInboundSms(args: {
     await tryReplyCommand(args, SMS_TEMPLATES.help);
   }
 
-  // 3. LLM classification — only when configured, never invented.
-  if (!command && isLlmConfigured()) {
-    const classification = await classifyInboundMessage(args.body);
-    if (classification) {
-      await q.setMessageClassification(args.businessId, message.id, classification);
+  // 3. Classification — LLM primary when configured, rules otherwise.
+  //    The message starts 'unclassified'; 'delivered' + a classification
+  //    payload is stamped only when an engine actually produced one. Every
+  //    stored payload honestly records which engine ran (`classifier`).
+  if (!command) {
+    if (isLlmConfigured()) {
+      const classification = await classifyInboundMessage(args.body);
+      if (classification) {
+        await q.setMessageClassification(args.businessId, message.id, classification);
+        status = "delivered";
+      } else {
+        // LLM configured but failed (network/HTTP/timeout/bad JSON): the
+        // rules backstop keeps the pipeline useful — never a silent drop.
+        const ruleResult = classifyInboundText(args.body);
+        await q.setMessageClassification(args.businessId, message.id, ruleResult);
+        status = "delivered";
+        console.log("[textback] LLM classification failed - rules backstop applied (confidence " + ruleResult.confidence.toFixed(2) + ")");
+      }
+    } else {
+      // No LLM configured: rules are the DEFAULT engine (build #7), so the
+      // product classifies honestly without LLM_API_KEY.
+      const ruleResult = classifyInboundText(args.body);
+      await q.setMessageClassification(args.businessId, message.id, ruleResult);
       status = "delivered";
     }
   }
@@ -222,9 +243,10 @@ async function classifyInboundMessage(body: string): Promise<MessageClassificati
       safetyConcern: typeof parsed.safetyConcern === "boolean" ? parsed.safetyConcern : null,
       notes: str(parsed.notes),
       model,
+      classifier: "llm" as const,
     };
   } catch (err) {
-    console.log("[textback] classification failed (message stays unclassified): " + String(err));
+    console.log("[textback] LLM classification failed (rules backstop applies): " + String(err));
     return null;
   }
 }

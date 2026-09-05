@@ -233,10 +233,27 @@ export interface Message {
   updatedAt: Date;
 }
 
+/** Coarse lead temperature bucket (build #7): rule engine always sets it; LLM path may. */
+export type MessageClassificationCategory = 'emergency' | 'urgent' | 'routine' | 'other';
+
+/** What the customer wants to happen next (build #7). */
+export type MessageClassificationIntent = 'quote' | 'book' | 'question';
+
 /**
- * Structured LLM parse of one inbound SMS (migration 008). Every field is
- * optional: the model reports what it could extract, and the DB stores the
- * raw payload verbatim — nothing is inferred outside the model call.
+ * Structured parse of one inbound SMS (migration 008 jsonb). Every field is
+ * optional: the engine (LLM or rules — see `classifier`) reports what it could
+ * extract, and the DB stores the raw payload verbatim — nothing is inferred
+ * outside the engine call.
+ *
+ * Build #7 additions (rule engine, src/lib/server/classify.ts) — all optional
+ * so pre-#7 LLM rows stay valid:
+ *   classifier        "rules" | "llm" — which engine produced this parse.
+ *                       ABSENT on rows written before build #7.
+ *   confidence        0..1, self-reported strength. NOT a probability.
+ *   category          coarse bucket (rules always set it; LLM may).
+ *   intent            quote | book | question | null.
+ *   preferredTimeHint verbatim time phrase extracted from the text.
+ *   matchedRules      rule keys that fired (rule engine only).
  */
 export interface MessageClassification {
   serviceNeed: string | null;
@@ -247,8 +264,20 @@ export interface MessageClassification {
   serviceAddress: string | null;
   safetyConcern: boolean | null;
   notes: string | null;
-  /** Model + base URL that produced this parse, for auditability. */
+  /** Model + base URL (LLM) or rules version (rule engine) — for auditability. */
   model: string;
+  /** Which engine produced this parse; absent on pre-build-#7 rows. */
+  classifier?: 'rules' | 'llm';
+  /** Self-reported match strength in [0,1]; an ordering signal, not a probability. */
+  confidence?: number;
+  /** Coarse bucket. The rule engine always sets it; the LLM path may. */
+  category?: MessageClassificationCategory;
+  /** What the customer wants next: quote, booking, or question. */
+  intent?: MessageClassificationIntent | null;
+  /** Verbatim time phrase from the text ("tonight", "tomorrow morning", ...). */
+  preferredTimeHint?: string | null;
+  /** Keys of the domain rules that fired (rule engine only). */
+  matchedRules?: string[];
 }
 
 // ---------------------------------------------------------------------------
