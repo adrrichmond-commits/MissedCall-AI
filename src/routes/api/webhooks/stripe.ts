@@ -44,6 +44,7 @@ import {
   markStripeEventProcessed,
 } from "~/db/queries/stripe";
 import type { StripeEventStore } from "~/lib/server/stripeWebhook";
+import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
 
 function jsonError(status: number, code: string, message: string): Response {
   return Response.json({ error: code, message }, { status });
@@ -76,7 +77,21 @@ const neonStore: StripeEventStore = {
       plan: args.plan,
     }),
   createPaymentFailedNotification: (args) =>
-    createPaymentFailedNotification(args.businessId, args.payload),
+    createPaymentFailedNotification(args.businessId, args.payload).then((notificationId) => {
+      // Fire-and-forget owner email (build #6) for this business-critical
+      // event — no-op unless the provider is configured; never blocks the
+      // webhook's in-app insert (a queue crash is swallowed inside the hook).
+      if (notificationId) {
+        queueNotificationEmail({
+          businessId: args.businessId,
+          notificationId,
+          type: "payment_failed",
+          payload: args.payload,
+          store: notificationEmailStore,
+        });
+      }
+      return notificationId;
+    }),
 };
 
 async function handlePost(request: Request): Promise<Response> {
