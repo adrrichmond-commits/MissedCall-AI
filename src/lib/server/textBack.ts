@@ -38,6 +38,7 @@ import {
   type PipelineLlm,
   type PipelineResult,
 } from "./classifyPipeline";
+import { maybeCreateFollowUpTaskForNewLead } from "./followUps";
 
 /** What actually happened with the text-back for one captured lead. */
 export type TextBackOutcome = "sent" | "opted_out" | "not_configured" | "failed";
@@ -107,6 +108,11 @@ export async function captureMissedCallLead(
 
   // 3. Text-back attempt — env-gated, opt-out-checked, failures honest.
   textBack = await sendTextBack(businessId, businessName, lead);
+
+  // 4. P3-C: the capture follow-up task ('lead_new', due next business day
+  //    business time). Best-effort — never fails the capture.
+  await maybeCreateFollowUpTaskForNewLead(businessId, lead);
+
   return { lead, textBack };
 }
 
@@ -285,6 +291,10 @@ async function escalateEmergency(
   try {
     // Link the lead when the conversation has one (text-back conversations
     // are created against a lead; inbound webhooks may or may not be).
+    // P3-C status automation contract: an emergency-classified lead is NOT
+    // flagged follow_up_needed and its lifecycle status is untouched — it
+    // stays where it is (typically new) with emergency priority; the
+    // escalation notification below is how the shop gets paged.
     const conversation = await q.getConversation(args.businessId, args.conversationId);
     const leadId = conversation?.leadId ?? null;
     if (leadId) {

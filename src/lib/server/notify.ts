@@ -17,6 +17,7 @@ import * as q from "~/db/queries";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
+import { maybeCreateFollowUpTaskForNewLead } from "~/lib/server/followUps";
 /** Capture a lead AND record the new_lead in-app notification. */
 export async function captureLead(businessId: string, input: CreateLeadInput): Promise<Lead> {
   const lead = await q.createLead(businessId, input);
@@ -25,6 +26,7 @@ export async function captureLead(businessId: string, input: CreateLeadInput): P
     leadName: lead.contactName,
     serviceNeed: lead.serviceNeed,
     priority: lead.priority,
+    estimatedJobValue: lead.estimatedJobValueHighCents ?? undefined,
   };
   const notification = await q.createNotification(businessId, {
     type: "new_lead",
@@ -39,6 +41,9 @@ export async function captureLead(businessId: string, input: CreateLeadInput): P
     payload,
     store: notificationEmailStore,
   });
+  // P3-C: the capture follow-up task ('lead_new') — best-effort, never fails
+  // the capture (the same contract as the notification above).
+  await maybeCreateFollowUpTaskForNewLead(businessId, lead);
   return lead;
 }
 export interface AppointmentRequestInput {

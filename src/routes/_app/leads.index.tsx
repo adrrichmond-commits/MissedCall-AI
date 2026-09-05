@@ -49,7 +49,15 @@ export const Route = createFileRoute("/_app/leads/")({
   component: LeadsPage,
 });
 
-const STATUS_OPTS = ["new", "contacted", "booked", "completed", "lost"] as const;
+const STATUS_OPTS = [
+  "new",
+  "contacted",
+  "qualified",
+  "follow_up_needed",
+  "appointment_scheduled",
+  "won",
+  "lost",
+] as const;
 const PRIORITY_OPTS = ["emergency", "high", "normal"] as const;
 const SOURCE_OPTS = ["missed_call", "web_form", "referral", "repeat_customer", "other"] as const;
 
@@ -166,7 +174,11 @@ function LeadsPage() {
                 <p className="mt-1 text-sm text-slate-600">{l.serviceNeed}</p>
                 <p className="mt-1 text-xs text-slate-400">
                   {l.contactPhone} · {formatDate(l.createdAt)} · {labelEnum(l.source)}
-                  {l.estimatedValueCents != null ? ` · ${formatMoney(l.estimatedValueCents)}` : ""}
+                  {l.estimatedValueCents != null
+                  ? ` · ${formatMoney(l.estimatedValueCents)}`
+                  : l.estimatedJobValueHighCents != null
+                    ? ` · typical ${formatMoney(l.estimatedJobValueLowCents ?? 0)}-${formatMoney(l.estimatedJobValueHighCents)}`
+                    : ""}
                 </p>
               </a>
             ))}
@@ -221,7 +233,11 @@ function LeadsPage() {
                       <StatusBadge status={l.status} />
                     </td>
                     <td className="px-4 py-3 text-right text-slate-700">
-                      {l.estimatedValueCents != null ? formatMoney(l.estimatedValueCents) : "—"}
+                      {l.estimatedValueCents != null
+                        ? formatMoney(l.estimatedValueCents)
+                        : l.estimatedJobValueHighCents != null
+                          ? <span className="text-slate-400" title="Typical range for this service">{formatMoney(l.estimatedJobValueLowCents ?? 0)}-{formatMoney(l.estimatedJobValueHighCents)}</span>
+                          : "—"}
                     </td>
                     <td className="px-4 py-3 text-right text-slate-500">{formatDate(l.createdAt)}</td>
                   </tr>

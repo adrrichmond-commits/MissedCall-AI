@@ -6,6 +6,7 @@ export * from "./auth";
 export * from "./conversations";
 export * from "./appointments";
 export * from "./leads";
+export * from "./followUpTasks";
 export * from "./settings";
 export * from "./notifications";
 export { assertServer, type ListOptions, type BusinessId } from "./shared";

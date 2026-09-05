@@ -138,8 +138,11 @@ export function ErrorState({ message, onRetry }: { message?: string; onRetry?: (
 const STATUS_META: Record<string, { tone: "brand" | "aqua" | "slate" | "amber" | "red" | "green"; label: string }> = {
   new: { tone: "brand", label: "New" },
   contacted: { tone: "aqua", label: "Contacted" },
+  // P3-C lifecycle (migration 011).
   qualified: { tone: "amber", label: "Qualified" },
-  converted: { tone: "green", label: "Converted" },
+  follow_up_needed: { tone: "amber", label: "Follow-up needed" },
+  appointment_scheduled: { tone: "green", label: "Appointment scheduled" },
+  won: { tone: "green", label: "Won" },
   lost: { tone: "slate", label: "Lost" },
   active: { tone: "green", label: "Active" },
   awaiting_customer: { tone: "amber", label: "Awaiting customer" },
