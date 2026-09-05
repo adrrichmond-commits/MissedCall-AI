@@ -962,15 +962,18 @@ function SubscriptionSection() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-slate-700">
           <p>
-            Current plan: <Badge tone="brand">14-day free trial</Badge>
+            Manage your plan, usage, and billing history on the Billing page.
           </p>
           <p className="mt-1 text-slate-500">
-            Starter $149/mo · Pro $249/mo — pick a plan when billing goes live. No card on file, nothing charges today.
+            Plan prices and monthly usage allowances live in one config (src/lib/pricing.ts) — nothing charges without your checkout.
           </p>
         </div>
-        <span className="inline-flex cursor-not-allowed items-center justify-center rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-400">
-          Billing coming soon
-        </span>
+        <a
+          href="/billing"
+          className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+        >
+          Open Billing
+        </a>
       </div>
     </SectionCard>
   );

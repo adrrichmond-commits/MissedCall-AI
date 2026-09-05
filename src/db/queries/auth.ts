@@ -95,6 +95,59 @@ export async function clearSubscriptionStatus(businessId: string): Promise<Busin
   const rows = await db`UPDATE businesses SET subscription_status = NULL WHERE id = ${businessId} RETURNING *`;
   return (rows[0] as unknown as Business | undefined) ?? null;
 }
+/**
+ * P3-F: cancel_at_period_end — service continues until `serviceEndsAt`;
+ * the subscription row and all data are untouched. Written to the business
+ * settings blob (a JSON field, not a new column — no migration needed) so
+ * the webhook path and UI can both read the scheduled state back.
+ */
+export async function setCancelAtPeriodEnd(
+  businessId: string,
+  serviceEndsAt: Date,
+): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `UPDATE businesses
+     SET settings = settings || jsonb_build_object('billingCancelAtPeriodEnd', true, 'billingServiceEndsAt', $2::timestamptz)
+     WHERE id = $1 RETURNING *`,
+    [businessId, serviceEndsAt.toISOString()],
+  );
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
+
+/** P3-F: clear a scheduled cancellation (reactivation). */
+export async function clearCancelAtPeriodEnd(businessId: string): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `UPDATE businesses
+     SET settings = settings - 'billingCancelAtPeriodEnd' - 'billingServiceEndsAt'
+     WHERE id = $1 RETURNING *`,
+    [businessId],
+  );
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
+
+/**
+ * P3-F: owner-visible plan change (upgrade/downgrade path). With Stripe keys
+ * present the caller first opens Stripe checkout and this writer only runs
+ * after the webhook activates the new plan; without keys the caller records
+ * the request honestly (billingConfigured=false state) instead of faking
+ * success. Data is never touched by a downgrade.
+ */
+export async function setBusinessPlan(
+  businessId: string,
+  plan: "starter" | "pro" | "trial",
+): Promise<Business | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `UPDATE businesses SET plan = $2::business_plan WHERE id = $1 RETURNING *`,
+    [businessId, plan],
+  );
+  return (rows[0] as unknown as Business | undefined) ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Users

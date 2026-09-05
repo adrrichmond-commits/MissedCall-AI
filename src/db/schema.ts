@@ -504,3 +504,53 @@ export interface Notification {
   createdAt: Date;
   updatedAt: Date;
 }
+
+// ---------------------------------------------------------------------------
+// Usage counters (migration 012 — P3-F billing completeness)
+// ---------------------------------------------------------------------------
+/**
+ * Plan-metered usage for one business over one billing period. One row per
+ * (business_id, period_start); counters move only through single-statement
+ * increments (src/db/queries/usage.ts), never read-modify-write.
+ */
+export interface UsageCounter {
+  id: string;
+  businessId: string;
+  /** Billing-period anchor (month since trial/subscription start), UTC instant. */
+  periodStart: Date;
+  /** Outbound SMS sent in the period (incl. AI auto-replies; excl. emergency). */
+  smsSent: number;
+  /** AI conversation turns processed (LLM or rules) in the period. */
+  aiTurns: number;
+  /** Calls handled by the AI voice receptionist (Twilio-gated; prepared). */
+  callsHandled: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// Billing events (migration 012 — P3-F billing history ledger)
+// ---------------------------------------------------------------------------
+export const BILLING_EVENT_TYPES = [
+  "checkout_completed",
+  "subscription_updated",
+  "subscription_canceled",
+  "payment_failed",
+  "plan_change",
+  "reactivated",
+] as const;
+export type BillingEventType = (typeof BILLING_EVENT_TYPES)[number];
+
+/** Where the event came from: the Stripe webhook path or an in-app action. */
+export type BillingEventSource = "stripe" | "local";
+
+export interface BillingEvent {
+  id: string;
+  businessId: string;
+  type: BillingEventType;
+  source: BillingEventSource;
+  description: string | null;
+  payload: Record<string, unknown>;
+  occurredAt: Date;
+  createdAt: Date;
+}

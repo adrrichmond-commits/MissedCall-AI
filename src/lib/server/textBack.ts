@@ -32,6 +32,9 @@ import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { isLlmConfigured, llmComplete, readLlmConfig } from "./llm";
 import { isSmsConfigured, sendSms } from "./sms";
+import { gateAction, loadPlanUsageContext, meterAction } from "./usageGate";
+import { anchorForBusiness } from "./usageGate";
+import type { GateDecision } from "./usage";
 import {
   runClassificationPipeline,
   type PipelineInput,
@@ -41,7 +44,12 @@ import {
 import { maybeCreateFollowUpTaskForNewLead } from "./followUps";
 
 /** What actually happened with the text-back for one captured lead. */
-export type TextBackOutcome = "sent" | "opted_out" | "not_configured" | "failed";
+export type TextBackOutcome =
+  | "sent"
+  | "opted_out"
+  | "not_configured"
+  | "limit_reached"
+  | "failed";
 
 export interface TextBackResult {
   outcome: TextBackOutcome;
@@ -49,6 +57,16 @@ export interface TextBackResult {
   sid: string | null;
   /** Machine-readable reason for non-sent outcomes. */
   reason: string | null;
+  /**
+   * P3-F: present ONLY when outcome === 'limit_reached' — the typed gate
+   * decision (plan-named honest message + upgrade target) for the UI/API
+   * upgrade prompt. A limit is never a silent drop.
+   */
+  gate: GateDecision | null;
+}
+
+function textBackResult(outcome: TextBackOutcome, reason: string | null, gate: GateDecision | null = null): TextBackResult {
+  return { outcome, sid: null, reason, gate };
 }
 
 export class TextBackError extends Error {
@@ -79,7 +97,7 @@ export async function captureMissedCallLead(
   const lead = await q.createLead(businessId, input);
 
   // 2. In-app new_lead notification (always, matching build #3 semantics).
-  let textBack: TextBackResult = { outcome: "not_configured", sid: null, reason: "Twilio not configured" };
+  let textBack: TextBackResult = textBackResult("not_configured", "Twilio not configured");
   try {
     const payload = {
       leadId: lead.id,
@@ -128,24 +146,42 @@ export async function sendTextBack(
   lead: Lead,
 ): Promise<TextBackResult> {
   if (!isSmsConfigured()) {
-    return { outcome: "not_configured", sid: null, reason: "Twilio not configured" };
+    return textBackResult("not_configured", "Twilio not configured");
   }
   const phone = normalizeForSend(lead.contactPhone);
   if (!phone) {
-    return { outcome: "failed", sid: null, reason: "Lead phone is not a textable number" };
+    return textBackResult("failed", "Lead phone is not a textable number");
   }
   if (await q.isSmsOptedOut(businessId, phone)) {
-    return { outcome: "opted_out", sid: null, reason: "Customer has opted out (STOP) - never texted" };
+    return textBackResult("opted_out", "Customer has opted out (STOP) - never texted");
+  }
+  // P3-F usage gate: the text-back is a plan-metered send. At the limit the
+  // caller gets a typed limit_reached result (with the honest plan-named
+  // message) instead of a silent drop. This is a first-contact text, not an
+  // emergency reply, so emergency bypass does NOT apply here.
+  const business = await q.getBusiness(businessId).catch(() => null);
+  if (business) {
+    const ctx = await loadPlanUsageContext(businessId, anchorForBusiness(business));
+    const gate = gateAction({ ctx, axis: "sms_per_month" });
+    if (!gate.allowed) {
+      console.log("[textback] sms limit reached for business " + businessId + " - text-back withheld, upgrade prompt returned");
+      return textBackResult("limit_reached", gate.message, gate);
+    }
   }
   const body = renderSmsTemplate(SMS_TEMPLATES.textBack, businessName);
   try {
     const result = await sendSms({ to: phone, body });
-    return { outcome: "sent", sid: result.sid, reason: null };
+    if (business) {
+      const ctx = await loadPlanUsageContext(businessId, anchorForBusiness(business));
+      await meterAction({ businessId, ctx, axis: "sms_per_month" });
+    }
+    return { outcome: "sent", sid: result.sid, reason: null, gate: null };
   } catch (err) {
     // Real failure (network, Twilio rejection). Lead survives; state is honest.
+    // No usage is metered for a failed send.
     const reason = err instanceof Error ? err.message : String(err);
     console.log("[textback] send failed for lead " + lead.id + ": " + reason);
-    return { outcome: "failed", sid: null, reason };
+    return textBackResult("failed", reason);
   }
 }
 
@@ -168,7 +204,12 @@ export async function handleInboundSms(args: {
   body: string;
   from: string;
   externalId: string | null;
-}): Promise<{ command: "stop" | "start" | "help" | null; status: "unclassified" | "delivered" }> {
+}): Promise<{
+  command: "stop" | "start" | "help" | null;
+  status: "unclassified" | "delivered";
+  /** P3-F: the ai_turns/sms limit decision for this turn, when one was hit. */
+  limitReached: GateDecision | null;
+}> {
   // 1. Store the inbound message FIRST (data survives every later failure).
   const message = await q.appendMessage({
     businessId: args.businessId,
@@ -203,8 +244,42 @@ export async function handleInboundSms(args: {
   //    kbVersion). Expected engine failure never throws: an LLM error
   //    degrades to the rules tier for THIS turn (tierReason "backstop") and
   //    is logged.
+  // P3-F: the ai_turns/sms limit decision for this turn, when one was hit.
+  let turnGate: GateDecision | null = null;
   if (!command) {
-    const pipeline = await runInboundPipeline(args.businessId, args.body);
+    // P3-F usage gating, SAFETY-FIRST ORDER: classification itself is never
+    // skipped — a customer texting about a flood must classify and escalate
+    // even at the limit. What the ai_turns limit controls is the EXPENSIVE
+    // LLM tier: at/over the limit the turn degrades to the rules engine
+    // (still classified, still escalated, never dropped) and the typed
+    // limit decision is returned for the UI/monitoring upgrade prompt. The
+    // turn is metered either way (usage stays truthful).
+    let llmAllowed = true;
+    try {
+      const bizRow = await q.getBusiness(args.businessId);
+      if (bizRow) {
+        const ctx = await loadPlanUsageContext(args.businessId, anchorForBusiness(bizRow));
+        const gate = gateAction({ ctx, axis: "ai_turns_per_month" });
+        if (!gate.allowed) {
+          turnGate = gate;
+          llmAllowed = false;
+        }
+      }
+    } catch (gateErr) {
+      // Gate failure must never block classification: fail OPEN for safety,
+      // log honestly (metering/gating is degraded, not the conversation).
+      console.log("[textback] usage gate unavailable - allowing LLM tier: " + String(gateErr));
+    }
+    const pipeline = await runInboundPipeline(args.businessId, args.body, llmAllowed ? undefined : { forceRulesTier: true });
+    try {
+      const bizRow = await q.getBusiness(args.businessId);
+      if (bizRow) {
+        const ctx = await loadPlanUsageContext(args.businessId, anchorForBusiness(bizRow));
+        await meterAction({ businessId: args.businessId, ctx, axis: "ai_turns_per_month" });
+      }
+    } catch (meterErr) {
+      console.log("[textback] ai_turn meter failed (classification unaffected): " + String(meterErr));
+    }
     await q.setMessageClassification(args.businessId, message.id, pipeline.classification);
     status = "delivered";
     if (pipeline.tierReason === "backstop") {
@@ -226,10 +301,15 @@ export async function handleInboundSms(args: {
     //    to an opted-out phone. Fire-and-forget: reply failure is logged and
     //    never fails the stored classification.
     if (pipeline.reply && pipeline.reply.text) {
-      await tryPipelineReply(args, pipeline.reply.text);
+      const replyGate = await tryPipelineReply(args, pipeline.reply.text, {
+        // EMERGENCY EXCEPTION (pricing.ts): emergency replies are never
+        // rate-limited — a flooded basement is not silenced by a counter.
+        emergency: pipeline.classification.urgency === "emergency",
+      });
+      if (replyGate) turnGate = replyGate;
     }
   }
-  return { command, status };
+  return { command, status, limitReached: turnGate };
 }
 
 /**
@@ -244,8 +324,14 @@ export async function handleInboundSms(args: {
 async function runInboundPipeline(
   businessId: string,
   body: string,
+  opts?: { forceRulesTier?: boolean },
 ): Promise<PipelineResult> {
-  const llm: PipelineLlm | null = isLlmConfigured()
+  // P3-F: forceRulesTier skips the LLM tier for this turn (ai_turns limit
+  // reached) — the rules engine still classifies, so the turn is useful.
+  const llm: PipelineLlm | null =
+    opts?.forceRulesTier === true
+      ? null
+      : isLlmConfigured()
     ? {
         model: readLlmConfig()?.model ?? "unknown",
         complete: (system, user, opts) =>
@@ -341,14 +427,31 @@ async function escalateEmergency(
   }
 }
 
-/** Best-effort screened auto-reply send; opt-out rule enforced here too. */
+/**
+ * Best-effort screened auto-reply send; opt-out rule enforced here too.
+ * P3-F: the reply is a plan-metered outbound SMS — at the limit the reply is
+ * withheld and the typed gate decision is returned for the upgrade prompt,
+ * EXCEPT for emergency replies, which are NEVER rate-limited (pricing.ts
+ * safety decision; still metered so usage stays truthful).
+ */
 async function tryPipelineReply(
   args: { businessId: string; conversationId: string; from: string },
   body: string,
-): Promise<void> {
+  gateOpts?: { emergency?: boolean },
+): Promise<GateDecision | null> {
   try {
-    if (await q.isSmsOptedOut(args.businessId, args.from)) return;
-    if (!isSmsConfigured()) return;
+    if (await q.isSmsOptedOut(args.businessId, args.from)) return null;
+    if (!isSmsConfigured()) return null;
+    const bizRow = await q.getBusiness(args.businessId).catch(() => null);
+    let ctx: Awaited<ReturnType<typeof loadPlanUsageContext>> | null = null;
+    if (bizRow) {
+      ctx = await loadPlanUsageContext(args.businessId, anchorForBusiness(bizRow));
+      const gate = gateAction({ ctx, axis: "sms_per_month", emergency: gateOpts?.emergency === true });
+      if (!gate.allowed) {
+        console.log("[textback] sms limit reached - auto-reply withheld for conversation " + args.conversationId);
+        return gate;
+      }
+    }
     await sendSms({ to: args.from, body });
     // Record the outbound reply on the conversation thread honestly.
     await q.appendMessage({
@@ -358,9 +461,13 @@ async function tryPipelineReply(
       body,
       status: "sent",
     });
+    if (ctx) {
+      await meterAction({ businessId: args.businessId, ctx, axis: "sms_per_month" });
+    }
   } catch (err) {
     console.log("[textback] auto-reply failed: " + String(err));
   }
+  return null;
 }
 
 async function tryReplyCommand(

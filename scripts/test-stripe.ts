@@ -235,6 +235,7 @@ function makeStore(): { state: MemState; store: StripeEventStore } {
       if (plan) b.plan = plan;
       if (subscriptionId && !b.stripeSubscriptionId) b.stripeSubscriptionId = subscriptionId;
     },
+    async recordBillingEvent() {},
     async createPaymentFailedNotification({ businessId, payload }) {
       state.notifications.push({ businessId, type: "payment_failed", payload });
     },

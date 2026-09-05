@@ -159,3 +159,23 @@ export async function createPaymentFailedNotification(
   const row = rows[0] as unknown as { id: string } | undefined;
   return row?.id ?? "";
 }
+
+/**
+ * P3-F: append to billing_events (the per-business billing history ledger).
+ * Called by the webhook route AFTER stripe_events dedupe — the ledger row is
+ * written once per actually-processed event.
+ */
+export async function recordBillingEvent(args: {
+  businessId: string;
+  type: "checkout_completed" | "subscription_updated" | "subscription_canceled" | "payment_failed";
+  description: string;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  assertServer();
+  const db = sql();
+  await db.query(
+    `INSERT INTO billing_events (business_id, event_type, source, description, payload)
+     VALUES ($1, $2, 'stripe', $3, $4::jsonb)`,
+    [args.businessId, args.type, args.description, JSON.stringify(args.payload ?? {})],
+  );
+}
