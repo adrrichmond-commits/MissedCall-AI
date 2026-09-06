@@ -80,7 +80,10 @@ export async function destroyCurrentSession(): Promise<void> {
 
 /**
  * Resolve the current request's session cookie to {user, business, role}.
- * Returns null when there is no valid session or the user is deactivated.
+ * Returns null when there is no valid session, the user is deactivated, OR
+ * the business is admin-disabled (businesses.disabled_at set, migration 014
+ * — the admin kill switch revokes the whole account's API + page access
+ * immediately, not just at next login).
  */
 export async function getSessionFromRequest(): Promise<AuthContext | null> {
   const raw = readSessionCookie();
@@ -92,6 +95,8 @@ export async function getSessionFromRequest(): Promise<AuthContext | null> {
   if (!user.isActive) return null;
   const business = await getBusiness(user.businessId);
   if (!business) return null;
+  // Admin disable flag (P3-G): a disabled business's sessions are dead.
+  if (business.disabledAt != null) return null;
   return { session: found, user, business, role: user.role };
 }
 

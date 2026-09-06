@@ -129,6 +129,12 @@ export interface Business {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   currentPeriodEnd: Date | null;
+  /**
+   * P3-G (migration 014): admin kill switch. NULL = enabled. When set, the
+   * session resolver treats every user of the business as signed out and
+   * login refuses. Only the admin dashboard writes it.
+   */
+  disabledAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -147,9 +153,42 @@ export interface User {
    * users may log in; the app shows a "verify your email" banner instead.
    */
   emailVerified: boolean;
+  /**
+   * P3-G (migration 014): the platform-operator flag, separate axis from
+   * role. Default false for everyone; promoted only by the runtime seed
+   * gate (PLATFORM_OWNER_EMAIL env match) and consumed only by the /admin
+   * gate (src/lib/server/admin.ts). A business owner is NOT a platform admin.
+   */
+  isPlatformAdmin: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// Admin audit (migration 014 — P3-G internal admin dashboard)
+// ---------------------------------------------------------------------------
+
+/** CHECK-constrained in 014; extends via a new migration, not in place. */
+export type AdminAuditAction =
+  | 'impersonate_start'
+  | 'impersonate_stop'
+  | 'account_disable'
+  | 'account_enable'
+  | 'plan_override';
+
+/**
+ * One append-only row per privileged admin action. No UPDATE path ships:
+ * writes are INSERT-only and the admin log page is read-only.
+ * `targetBusinessId` is nullable — platform-level actions target nothing.
+ */
+export interface AdminAudit {
+  id: string;
+  adminUserId: string;
+  action: AdminAuditAction;
+  targetBusinessId: string | null;
+  detail: Record<string, unknown>;
+  createdAt: Date;
 }
 
 export interface Session {

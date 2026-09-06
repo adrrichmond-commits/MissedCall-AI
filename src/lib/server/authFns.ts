@@ -123,6 +123,11 @@ export const loginFn = createServerFn({ method: "POST" })
     if (!user.isActive) {
       return { ok: false, code: "invalid", error: "This account has been deactivated. Contact your account owner." };
     }
+    // P3-G: admin-disabled businesses (businesses.disabled_at set) cannot log
+    // in at all — the honest message routes them to the platform operator.
+    if (user.businessId && (await q.getBusiness(user.businessId))?.disabledAt != null) {
+      return { ok: false, code: "invalid", error: "This account is currently disabled. Contact MissedCall AI support." };
+    }
     // Demo-friendly gate: unverified users can log in; the app shows a
     // "verify your email" banner instead of blocking them.
     await q.touchLastLogin(user.id);
