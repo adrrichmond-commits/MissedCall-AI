@@ -80,38 +80,51 @@ export async function requirePlatformAdmin(): Promise<AuthContext> {
 }
 
 export interface ImpersonationState {
-  /** The active session belongs to a different business than the admin's. */
+  /** The active session belongs to a different user than the stashed admin. */
   active: boolean;
   /** Business currently being viewed (the active session's business). */
   viewedBusinessId: string | null;
   viewedBusinessName: string | null;
-  /** The impersonated business's admin-flagged original admin user id. */
+  /** The stashed admin session's user id/email (null when no live stash). */
   adminUserId: string | null;
   adminEmail: string | null;
 }
 
 /**
  * Impersonation status for the app-shell banner. Safe for any session —
- * it reports state only; the EXIT action does the privileged work. When
- * the stashed token is dead (expired/revoked) the cookie is cleared and
- * impersonation reports off; the admin re-authenticates normally.
+ * it reports state only; the EXIT action does the privileged work.
+ *
+ * ACTIVE means: a live stashed session exists whose user is a platform
+ * admin AND the active session's user is a DIFFERENT user (the target's
+ * owner). Comparing user ids (not business ids) is what makes this robust:
+ * if the admin re-logs-in with a stale stash still in the cookie jar, the
+ * ids match, no banner shows, and exit just clears the stale cookie.
  */
 export async function getImpersonationState(): Promise<ImpersonationState> {
   const raw = getCookie(ADMIN_RETURN_COOKIE);
   const ctx = await getSessionFromRequest();
-  if (!raw || !ctx) {
+  if (!ctx) {
     return {
       active: false,
-      viewedBusinessId: ctx?.business.id ?? null,
-      viewedBusinessName: ctx?.business.name ?? null,
+      viewedBusinessId: null,
+      viewedBusinessName: null,
+      adminUserId: null,
+      adminEmail: null,
+    };
+  }
+  if (!raw) {
+    return {
+      active: false,
+      viewedBusinessId: ctx.business.id,
+      viewedBusinessName: ctx.business.name,
       adminUserId: null,
       adminEmail: null,
     };
   }
   const stashed = await getSessionByTokenHash(await hashToken(raw));
-  if (!stashed) {
-    // Stashed admin session died (expired/revoked) — can't exit back into
-    // it. Clear the cookie; the user is the target owner until they sign out.
+  if (!stashed || !stashed.userData.isPlatformAdmin) {
+    // No live stash, or the stash isn't an admin session (never a legit
+    // impersonation) — clear the cookie; state is "not impersonating".
     deleteCookie(ADMIN_RETURN_COOKIE, { path: "/" });
     return {
       active: false,
@@ -121,7 +134,7 @@ export async function getImpersonationState(): Promise<ImpersonationState> {
       adminEmail: null,
     };
   }
-  const active = stashed.userData.businessId !== ctx.business.id;
+  const active = stashed.userData.id !== ctx.user.id;
   return {
     active,
     viewedBusinessId: ctx.business.id,
@@ -198,15 +211,17 @@ export async function exitImpersonation(): Promise<ExitResult> {
   const raw = getCookie(ADMIN_RETURN_COOKIE);
   if (!raw) return { ok: false, error: "Not currently impersonating." };
   const stashed = await getSessionByTokenHash(await hashToken(raw));
-  if (!stashed) {
+  if (!stashed || !stashed.userData.isPlatformAdmin) {
+    // Only a platform-admin stash is a legitimate impersonation origin.
     deleteCookie(ADMIN_RETURN_COOKIE, { path: "/" });
     return { ok: false, error: "Admin session expired — sign in again." };
   }
   const ctx = await getSessionFromRequest();
-  const impersonating = ctx != null && ctx.business.id !== stashed.userData.businessId;
+  const impersonating = ctx != null && ctx.user.id !== stashed.userData.id;
   if (!impersonating) {
     // Stash exists but the active session is already the admin's own
-    // (e.g. double-exit) — just clear the stale cookie, no audit noise.
+    // (e.g. double-exit, or re-login with a stale stash) — clear the
+    // stale cookie, no audit noise.
     deleteCookie(ADMIN_RETURN_COOKIE, { path: "/" });
     return { ok: true };
   }

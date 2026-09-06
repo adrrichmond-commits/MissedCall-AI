@@ -263,6 +263,7 @@ export async function getSessionByTokenHash(tokenHash: string): Promise<SessionW
         'passwordHash', u.password_hash,
         'isActive', u.is_active,
         'emailVerified', u.email_verified,
+        'isPlatformAdmin', u.is_platform_admin,
         'lastLoginAt', u.last_login_at,
         'createdAt', u.created_at,
         'updatedAt', u.updated_at
