@@ -554,3 +554,67 @@ export interface BillingEvent {
   occurredAt: Date;
   createdAt: Date;
 }
+
+// ---------------------------------------------------------------------------
+// Voice calls (migration 013 — P3-E AI voice receptionist)
+// ---------------------------------------------------------------------------
+
+/**
+ * What WE observed for a call (honest local state, not a Twilio mirror):
+ *   in_progress — the AI conversation is running (the webhook's live state)
+ *   completed   — AI handled it, caller hung up
+ *   transfered  — caller was <Dial>ed to the business (or asked to hold)
+ *   voicemail   — caller left a recording after the AI wrapup
+ *   no_answer   — the <Dial> was not answered (dial callback)
+ *   failed      — provider-side failure recorded
+ */
+export type CallStatus =
+  | 'in_progress'
+  | 'completed'
+  | 'transfered'
+  | 'voicemail'
+  | 'no_answer'
+  | 'failed';
+
+/**
+ * One transcript turn stored on calls.transcript.turns. Caller turns carry
+ * the classification stamps shaped like MessageClassification; AI turns carry
+ * what was actually spoken. `at` is an ISO string.
+ */
+export interface CallTranscriptTurn {
+  role: 'caller' | 'ai';
+  text: string;
+  at: string;
+  classification?: Record<string, unknown>;
+}
+
+/**
+ * The transcript document: the turn-by-turn exchange PLUS the live flow
+ * state of the receptionist conversation (stage/exchanges/captures) so the
+ * webhook can resume mid-call honestly even across Twilio retries.
+ */
+export interface CallTranscript {
+  turns: CallTranscriptTurn[];
+  /** Flow state — opaque to SQL, written only by voiceReceptionist.ts. */
+  flow?: Record<string, unknown>;
+}
+
+export interface Call {
+  id: string;
+  businessId: string;
+  /** Twilio CallSid — UNIQUE, the webhook idempotency key. */
+  callSid: string;
+  fromNumber: string | null;
+  toNumber: string | null;
+  status: CallStatus;
+  durationSec: number | null;
+  recordingUrl: string | null;
+  transcript: CallTranscript;
+  aiSummary: string | null;
+  /** The lead captured from this call — SET NULL when the lead is deleted. */
+  leadId: string | null;
+  /** E.164 number the caller was transferred to, NULL when never transferred. */
+  transferedTo: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
