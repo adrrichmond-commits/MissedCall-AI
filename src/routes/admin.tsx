@@ -13,25 +13,24 @@
  */
 import { useState } from "react";
 import { createFileRoute, Outlet, redirect, notFound } from "@tanstack/react-router";
-import { requirePlatformAdmin, getImpersonationState } from "~/lib/server/admin";
-import { exitImpersonationFn } from "~/lib/server/adminFns";
-import { getSessionFn } from "~/lib/server/sessionFns";
+import {
+  exitImpersonationFn,
+  getImpersonationStateFn,
+  platformAdminGateFn,
+} from "~/lib/server/adminFns";
 
 export const Route = createFileRoute("/admin")({
   beforeLoad: async () => {
-    try {
-      await requirePlatformAdmin();
-    } catch {
-      const session = await getSessionFn();
-      if (!session) {
-        throw redirect({ to: "/login", search: { next: "/admin" } });
-      }
-      // Signed in but not the platform admin (or gate closed): 404.
-      throw notFound();
+    const gate = await platformAdminGateFn();
+    if (gate.ok) return;
+    if (gate.kind === "unauthenticated") {
+      throw redirect({ to: "/login", search: { next: "/admin" } });
     }
+    // Signed in but not the platform admin (or gate closed): 404.
+    throw notFound();
   },
   loader: async () => {
-    const imp = await getImpersonationState();
+    const imp = await getImpersonationStateFn();
     return {
       active: imp.active,
       viewedBusinessName: imp.viewedBusinessName,

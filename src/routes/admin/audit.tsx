@@ -13,8 +13,9 @@ export const Route = createFileRoute("/admin/audit")({
     action: typeof search.action === "string" ? search.action : "",
     page: Number(search.page ?? 1) || 1,
   }),
+  loaderDeps: ({ search }) => [search.action, search.page],
   loader: async ({ deps }) => {
-    const res = await adminAuditLogFn({ data: { action: deps?.action || undefined, page: deps?.page ?? 1 } });
+    const res = await adminAuditLogFn({ data: { action: deps[0] || undefined, page: deps[1] ?? 1 } });
     if (!res.ok) throw new Error(res.error);
     return res.data;
   },
@@ -67,7 +68,7 @@ function AuditPage() {
 
       <div className="mt-4 flex flex-wrap gap-2">
         <Link
-          to="/admin/audit" search={{}}
+          to="/admin/audit"
           search={{ action: "", page: 1 }}
           className={`rounded-full border px-3 py-1 text-xs font-semibold ${
             search.action === "" ? "border-brand-300 bg-brand-50 text-brand-700" : "border-slate-300 bg-white text-slate-600"
@@ -78,7 +79,7 @@ function AuditPage() {
         {Object.entries(ACTION_LABELS).map(([key, meta]) => (
           <Link
             key={key}
-            to="/admin/audit" search={{}}
+            to="/admin/audit"
             search={{ action: key, page: 1 }}
             className={`rounded-full border px-3 py-1 text-xs font-semibold ${
               search.action === key ? "border-brand-300 bg-brand-50 text-brand-700" : "border-slate-300 bg-white text-slate-600"
@@ -143,14 +144,14 @@ function AuditPage() {
           <span>Page {data.page} of {pages}</span>
           <div className="flex gap-2">
             <Link
-              to="/admin/audit" search={{}}
+              to="/admin/audit"
               search={{ action: search.action, page: Math.max(1, data.page - 1) }}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5"
             >
               Previous
             </Link>
             <Link
-              to="/admin/audit" search={{}}
+              to="/admin/audit"
               search={{ action: search.action, page: Math.min(pages, data.page + 1) }}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5"
             >

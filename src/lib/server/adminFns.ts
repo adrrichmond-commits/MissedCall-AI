@@ -79,6 +79,35 @@ export const exitImpersonationFn = createServerFn({ method: "POST" }).handler(
 );
 
 // ---------------------------------------------------------------------------
+// Route gate — the /admin beforeLoad calls this via RPC so the route module
+// never imports a plain server module (import-protection-safe).
+// ---------------------------------------------------------------------------
+
+export type PlatformAdminGateResult =
+  | { ok: true }
+  | { ok: false; kind: "unauthenticated" | "forbidden"; message: string };
+
+/** Runs requirePlatformAdmin() server-side; reports instead of throwing. */
+export const platformAdminGateFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<PlatformAdminGateResult> => {
+    try {
+      await requirePlatformAdmin();
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof AuthError) {
+        return {
+          ok: false,
+          kind: e.kind === "unauthenticated" ? "unauthenticated" : "forbidden",
+          message: e.message,
+        };
+      }
+      console.error("[admin] gate error:", e);
+      return { ok: false, kind: "forbidden", message: "Not found." };
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Accounts list + detail
 // ---------------------------------------------------------------------------
 

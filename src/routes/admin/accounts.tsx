@@ -21,10 +21,11 @@ export const Route = createFileRoute("/admin/accounts")({
     q: typeof search.q === "string" ? search.q.slice(0, 120) : undefined,
     page: search.page != null ? Number(search.page) || 1 : undefined,
   }),
-  loader: async ({ deps }: { deps: { q?: string; page?: number } }) => {
+  loaderDeps: ({ search }) => [search.q, search.page],
+  loader: async ({ deps }) => {
     const { adminListAccountsFn } = await import("~/lib/server/adminFns");
     const res = await adminListAccountsFn({
-      data: { search: deps?.q ?? "", page: deps?.page ?? 1 },
+      data: { search: deps[0] ?? "", page: deps[1] ?? 1 },
     });
     if (!res.ok) throw new Error(res.error);
     return res.data;
@@ -78,7 +79,7 @@ function AccountsPage() {
         </div>
         <nav className="flex items-center gap-3 text-sm">
           <Link
-            to="/admin/accounts" search={{}}
+            to="/admin/accounts"
             activeProps={{ className: "font-semibold text-brand-700" }}
             search={{ q: search.q, page: search.page }}
           >
@@ -180,7 +181,7 @@ function AccountsPage() {
           </span>
           <div className="flex gap-2">
             <Link
-              to="/admin/accounts" search={{}}
+              to="/admin/accounts"
               search={{ q: search.q, page: Math.max(1, data.page - 1) }}
               disabled={data.page <= 1}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 disabled:opacity-40"
@@ -188,7 +189,7 @@ function AccountsPage() {
               Previous
             </Link>
             <Link
-              to="/admin/accounts" search={{}}
+              to="/admin/accounts"
               search={{ q: search.q, page: Math.min(pages, data.page + 1) }}
               disabled={data.page >= pages}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 disabled:opacity-40"

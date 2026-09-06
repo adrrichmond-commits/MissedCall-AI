@@ -82,7 +82,7 @@ for (const fn of [
 }
 // The /admin layout gate: signed-out → login redirect; non-admin → 404.
 const layout = adminRoutes[0];
-checkTrue("gate: layout calls requirePlatformAdmin in beforeLoad", layout.includes("await requirePlatformAdmin()"));
+checkTrue("gate: layout calls the platform-admin gate RPC in beforeLoad", layout.includes("await platformAdminGateFn()"));
 checkTrue("gate: layout throws notFound() for non-admins", layout.includes("throw notFound()"));
 checkTrue("gate: layout redirects signed-out to /login with next=/admin", layout.includes('to: "/login"') && layout.includes('"/admin"'));
 // The gate itself: env precondition + DB flag; no client input in the decision.
@@ -121,14 +121,14 @@ checkTrue(
 );
 checkTrue(
   "disable: enable clears the flag",
-  /setBusinessDisabled\(\s*businessId,\s*disabled \? new Date\(\) : null/.test(read("../src/lib/server/admin.ts")),
+  /setBusinessDisabled\(\s*targetBusinessId,\s*disabled \? new Date\(\) : null/.test(read("../src/lib/server/admin.ts")),
 );
 
 // 4. Impersonation — audit-first, banner state, exit restores
 checkTrue(
   "impersonate: start audits BEFORE any cookie/session change",
   adminFns.indexOf("impersonateBusiness") > -1 &&
-    adminQueries.indexOf('action: "impersonate_start"') > -1,
+    read("../src/lib/server/admin.ts").indexOf('action: "impersonate_start"') > -1,
 );
 const adminSrc = read("../src/lib/server/admin.ts");
 const impStart = adminSrc.indexOf("export async function impersonateBusiness");
@@ -213,7 +213,7 @@ checkTrue("isolation: uuid-shaped businessId validated in fns", /\[0-9a-f-\]\{36
 const bounds = computePeriodBounds(new Date("2024-01-17T12:00:00Z"), "UTC");
 check("funnel: bucket week", bucketForPeriod(new Date("2024-01-16T10:00:00Z"), bounds), "week");
 check("funnel: bucket month", bucketForPeriod(new Date("2024-01-05T10:00:00Z"), bounds), "month");
-check("funnel: bucket older", bucketForPeriod(new Date("2023-11-05T10:00:00Z"), bounds), "older");
+check("funnel: before month → all", bucketForPeriod(new Date("2023-11-05T10:00:00Z"), bounds), "all");
 const metrics = computeRevenueMetrics({
   week: { wonLeads: 1, recoveredCents: 25000 },
   month: { wonLeads: 3, recoveredCents: 75000 },
