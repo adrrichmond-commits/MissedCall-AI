@@ -94,6 +94,12 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/missedcall
       USE_LOCAL_POSTGRES: "1"
       PORT: "3210"
+      # The admin gate is closed unconditionally when this is unset (root 404
+      # for everyone, signed in or not). Smoke's "anonymous /admin lands on
+      # /login" check needs the gate OPEN, matching production where the owner
+      # sets it in Secrets. No admin user is seeded in CI, so nothing is
+      # actually reachable through it.
+      PLATFORM_OWNER_EMAIL: owner@missedcall.test
     steps:
       - uses: actions/checkout@v4
 
