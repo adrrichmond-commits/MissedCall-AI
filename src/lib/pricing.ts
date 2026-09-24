@@ -3,8 +3,9 @@
  *
  * SINGLE source of truth for plan data — every UI surface and server
  * validation reads from here. Never hard-code prices in components.
- * Stripe checkout arrives in Phase 2; until then plan changes are recorded
- * on the account (see src/lib/server/billingFns.ts).
+ * Live billing: when STRIPE_SECRET_KEY is set, plan cards open API-created
+ * Stripe Checkout Sessions (see src/lib/server/stripeApi.ts); without keys
+ * the hosted payment links below are the fallback.
  */
 
 export interface PlanConfig {
@@ -16,9 +17,11 @@ export interface PlanConfig {
   tagline: string;
   features: string[];
   /**
-   * Stripe hosted checkout link (Phase 2). Payment Card is a platform-managed
-   * Stripe account — there is no API key in this app, so checkout happens on
-   * Stripe's hosted page and the prices below must match the Stripe prices.
+   * Hosted Stripe payment link — the FALLBACK checkout path, used only when
+   * STRIPE_SECRET_KEY is absent. The primary path creates Checkout Sessions
+   * via the Stripe API against the dedicated MissedCall AI Stripe account
+   * (prices resolved from STRIPE_PRICE_STARTER / STRIPE_PRICE_PRO or the
+   * account's lookup_keys "starter"/"pro" — created from priceCents below).
    * Only edit prices here AND in Stripe together.
    */
   checkoutUrl: string;

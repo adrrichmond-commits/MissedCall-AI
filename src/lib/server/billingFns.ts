@@ -36,6 +36,8 @@ export interface BillingOverview {
   plans: PlanView[];
   trialDays: number;
   phaseNote: string;
+  /** True when STRIPE_SECRET_KEY is present — plan cards open API-created checkout sessions. */
+  stripeApiConfigured: boolean;
 }
 
 /**
@@ -86,6 +88,7 @@ export const getBillingOverviewFn = createServerFn({ method: "GET" }).handler(
           })),
           trialDays: TRIAL_DAYS,
           phaseNote: BILLING_PHASE_NOTE,
+          stripeApiConfigured: readStripeConfig() != null,
         },
       };
     } catch (e) {
@@ -94,9 +97,10 @@ export const getBillingOverviewFn = createServerFn({ method: "GET" }).handler(
   },
 );
 
-// NOTE: there is intentionally no in-app plan-change writer. There is no
-// Stripe API key in this app (platform-managed account), so plan activation
-// happens after payment on Stripe's hosted checkout — not from a button here.
+// NOTE: there is still intentionally no direct plan-change writer here. Even
+// with the live Stripe key, plan activation happens ONLY when the webhook
+// confirms the subscription (customer.subscription.*) — requestPlanChangeFn
+// opens checkout, it never flips businesses.plan itself.
 // ---------------------------------------------------------------------------
 // Write: cancel — sets subscription_status='canceled' and KEEPS plan data
 // (data preservation is a product requirement). Owner-only. In Phase 2 this
@@ -195,9 +199,12 @@ export interface BillingOverviewP3F {
  * Owner-only plan change (upgrade or downgrade). HONEST GATING: without
  * Stripe keys there is no payment rail, so the change is NOT applied and no
  * fake success is returned — the UI shows the "billing not configured"
- * state and the Stripe checkout link instead. With keys present, the caller
- * opens Stripe checkout; the plan flips when the webhook confirms payment
- * (the same rule the P2 activation path already enforces).
+ * state and the hosted Stripe payment-link fallback instead. With keys
+ * present (the live path), an API Checkout Session is created for THIS
+ * business (mode=subscription, the plan's provisioned price, trial mirroring
+ * the app's recorded trial window, success/cancel back to /billing); the plan
+ * flips when the webhook confirms payment — the same single-writer rule the
+ * P2 activation path already enforces.
  */
 export const requestPlanChangeFn = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
@@ -218,7 +225,8 @@ export const requestPlanChangeFn = createServerFn({ method: "POST" })
       const stripe = readStripeConfig();
       if (!stripe) {
         // HONEST STATE: no Stripe keys in this deployment — there is no way
-        // to take payment, so the change is refused with the checkout link,
+        // to take payment here, so the change is refused and the UI falls
+        // back to the hosted Stripe payment link (pricing.ts checkoutUrl),
         // never silently applied.
         return {
           ok: false,
@@ -227,17 +235,31 @@ export const requestPlanChangeFn = createServerFn({ method: "POST" })
             "Billing is not configured yet, so plan changes can't be applied here. Use the secure Stripe checkout link on the plan card to switch plans — your selection activates after payment.",
         };
       }
-      // With keys present the UI redirects to Stripe hosted checkout; the
-      // webhook (customer.subscription.*) is the only writer that flips the
-      // plan — same single-writer rule as Phase 2 activation.
+      // API-driven checkout (primary when keys are present): create a real
+      // Checkout Session scoped to this business. The owner's email pre-fills
+      // Stripe so the webhook's email lookup can match even if metadata is
+      // lost. Session creation itself never charges anything.
+      const { createSubscriptionCheckout } = await import("~/lib/server/stripeApi");
+      const session = await createSubscriptionCheckout({
+        planId: target.id,
+        businessId,
+        trialEndsAt: business.trialEndsAt ?? null,
+        customerEmail: typeof ctx.user?.email === "string" && ctx.user.email ? ctx.user.email : null,
+      });
+      if (!session.ok) return { ok: false, status: session.status, error: session.error };
       return {
         ok: true,
         data: {
-          message: `Opening secure checkout for ${target.name} — your plan updates automatically after payment.`,
-          checkoutUrl: target.checkoutUrl,
+          message: `Opening secure Stripe checkout for ${target.name} — your plan updates automatically after payment.`,
+          checkoutUrl: session.url,
         },
       };
     } catch (e) {
+      // Stripe API failures surface honestly (StripeApiError message, no key
+      // material) instead of pretending the checkout opened.
+      if (e instanceof Error && e.name === "StripeApiError") {
+        return { ok: false, status: 400, error: "Stripe checkout couldn't be created: " + e.message };
+      }
       return authErrorToResult(e);
     }
   });
