@@ -14,6 +14,7 @@ import {
   requireAuth,
 } from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
+import { receptionistConfigFromSettings, resolveReceptionistGreeting } from "~/lib/voice/receptionistConfig";
 import * as q from "~/db/queries";
 import type { Business } from "~/db/schema";
 import {
@@ -301,6 +302,12 @@ export const getSettingsFn = createServerFn({ method: "GET" }).handler(async ():
         notificationPrefs: prefs,
         emergencyPrefs: sanitizeEmergencyPrefs(bizSettings),
         emergencyPrefsSaved: typeof bizSettings.emergencyPrefsSavedAt === 'string',
+        // P4-O: the greeting callers actually hear (studio config > default),
+        // resolved by the same pure helper the voice path uses.
+        receptionistGreeting: resolveReceptionistGreeting(
+          receptionistConfigFromSettings((b as unknown as { settings?: unknown }).settings),
+          b.name || null,
+        ),
         onboarding: onboardingState(b, done),
       },
     };

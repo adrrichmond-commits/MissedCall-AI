@@ -17,7 +17,6 @@ import { Field, TextInput } from "~/components/ui/Form";
 import { Button } from "~/components/ui/Button";
 import { COMMON_TIMEZONES, US_STATES, type SettingsView } from "~/lib/settingsTypes";
 import { SMS_TEMPLATES, renderSmsTemplate } from "~/lib/smsTemplates";
-import { DEFAULT_GREETING } from "~/lib/voice/twiml";
 
 /** Shared styling for raw <select> elements (matches settings.tsx inputCls). */
 const inputCls =
@@ -861,7 +860,9 @@ function HowItWorksStep({
 
   const businessName = view.business.name || "";
   const textBackSample = renderSmsTemplate(SMS_TEMPLATES.textBack, businessName);
-  const greetingSample = DEFAULT_GREETING(businessName || null);
+  // P4-O: the greeting callers actually hear — the studio-configured one when
+  // set, resolved server-side by the same helper the voice path uses.
+  const greetingSample = view.receptionistGreeting;
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">

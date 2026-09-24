@@ -25,6 +25,11 @@ import {
   MAX_EXCHANGES} from "../src/lib/voice/callFlow";
 import { resolveTransferRules, normalizeTransferNumber } from "../src/lib/voice/transferRules";
 import {
+  resolveReceptionistGreeting,
+  sanitizeReceptionistConfig,
+  type ReceptionistConfig,
+} from "../src/lib/voice/receptionistConfig";
+import {
   handleVoiceWebhook,
   parseVoiceParams,
   type VoiceCallStore,
@@ -92,6 +97,12 @@ function assertWellFormedTwiML(name: string, xml: string): void {
 
 {
   const g = DEFAULT_GREETING("Rapid Rooter");
+  // P4-O parity: an empty studio config resolves to byte-identical defaults.
+  const EMPTY: ReceptionistConfig = sanitizeReceptionistConfig(undefined);
+  check("greeting parity (named business)", resolveReceptionistGreeting(EMPTY, "Rapid Rooter"), g);
+  check("greeting parity (null business)", resolveReceptionistGreeting(EMPTY, null), DEFAULT_GREETING(null));
+  check("greeting persona in default", resolveReceptionistGreeting(sanitizeReceptionistConfig({ name: "Sally" }), "Rapid Rooter").includes("This is Sally."), true);
+  check("greeting custom verbatim", resolveReceptionistGreeting(sanitizeReceptionistConfig({ greeting: "You reached Dave." }), "Rapid Rooter"), "You reached Dave.");
   check("greeting includes business name", g.includes("Rapid Rooter"), true);
   check("greeting null-name fallback", !DEFAULT_GREETING(null).includes("null"), true);
 
@@ -225,6 +236,10 @@ const CTX = {
   check("after-hours allowed with pref", resolveTransferRules({ settings: {}, businessPhone: "+15125550100", afterHoursEmergency: true }, "after_hours").offersTransfer, true);
   check("human request offered", resolveTransferRules({ settings: {}, businessPhone: "+15125550100", afterHoursEmergency: false }, "human_request").offersTransfer, true);
   check("undialable short number rejected", normalizeTransferNumber("512"), null);
+  // P4-O precedence: studio key > legacy top-level key > business phone.
+  check("studio wins over legacy", resolveTransferRules({ settings: { transferNumber: "+15125550188", receptionist: { transferNumber: "+15125550199" } }, businessPhone: "+15125550100", afterHoursEmergency: true }, "emergency").transferNumber, "+15125550199");
+  check("legacy fallback", resolveTransferRules({ settings: { transferNumber: "+15125550188" }, businessPhone: "+15125550100", afterHoursEmergency: true }, "emergency").transferNumber, "+15125550188");
+  check("empty studio falls through to legacy", resolveTransferRules({ settings: { transferNumber: "+15125550188", receptionist: { transferNumber: "" } }, businessPhone: "+15125550100", afterHoursEmergency: true }, "emergency").transferNumber, "+15125550188");
 }
 
 // ---------------------------------------------------------------------------
@@ -245,11 +260,18 @@ function encodeForm(params: Record<string, string>): string {
   return new URLSearchParams(params).toString();
 }
 
-function makeStore(opts?: { failDb?: boolean; failWrites?: boolean; transferNumber?: string | null }): VoiceCallStore & {
+function makeStore(opts?: {
+  failDb?: boolean;
+  failWrites?: boolean;
+  transferNumber?: string | null;
+  /** P4-O: the businesses.settings jsonb blob (studio config rides here). */
+  settings?: Record<string, unknown>;
+}): VoiceCallStore & {
   calls: Map<string, Call>;
   leads: Lead[];
   notifications: { businessId: string; payload: Record<string, unknown> }[];
   usage: number;
+  summarizeInstructions: (string | undefined)[];
 } {
   const calls = new Map<string, Call>();
   const leads: Lead[] = [];
@@ -262,7 +284,7 @@ function makeStore(opts?: { failDb?: boolean; failWrites?: boolean; transferNumb
     name: "Rapid Rooter Plumbing",
     phone: opts?.transferNumber === undefined ? "+15125550100" : opts.transferNumber,
     timezone: "America/Chicago",
-    settings: {},
+    settings: opts?.settings ?? {},
   };
   const fail = opts?.failDb === true;
   const failWrites = opts?.failWrites === true;
@@ -270,6 +292,7 @@ function makeStore(opts?: { failDb?: boolean; failWrites?: boolean; transferNumb
     calls,
     leads,
     notifications,
+    summarizeInstructions: [] as (string | undefined)[],
     get usage() { return usage; },
     async findBusinessByPhoneKey(key) {
       if (fail) throw new Error("db down");
@@ -364,6 +387,9 @@ function makeStore(opts?: { failDb?: boolean; failWrites?: boolean; transferNumb
       usage += 1;
     },
     async summarizeCall(args) {
+      // P4-O: capture what the driver passed so tests can assert the studio
+      // instructions reach the summary prompt.
+      (this as unknown as { summarizeInstructions: (string | undefined)[] }).summarizeInstructions.push(args.instructions);
       const spoken = args.transcript.filter((t) => t.text.trim().length > 0).length;
       if (spoken === 0) return null;
       return `Voice call handled: ${spoken} turns exchanged.`;
@@ -568,6 +594,75 @@ const CALL_BASE = {
     const wrongSig = await signParams(WEBHOOK_URL, fields, "other-token");
     const res = await postVoice(store, fields, { signature: wrongSig });
     check("wrong token rejected", res.status, 403);
+  }
+  // ---- P4-O receptionist studio: handler consumption --------------------------
+  {
+    // Custom greeting spoken VERBATIM on first touch.
+    const store = makeStore({ settings: { receptionist: { greeting: "Thanks for calling Rapid Rooter, you reached Dave!" } } });
+    const res = await postVoice(store, { ...CALL_BASE });
+    checkTrue("studio greeting verbatim", res.xml?.includes("Thanks for calling Rapid Rooter, you reached Dave!") ?? false);
+    checkTrue("studio greeting replaces default", !(res.xml?.includes("Thank you for calling Rapid Rooter Plumbing. This is the office assistant.") ?? true));
+  }
+  {
+    // Persona name rides the default greeting.
+    const store = makeStore({ settings: { receptionist: { name: "Sally" } } });
+    const res = await postVoice(store, { ...CALL_BASE });
+    checkTrue("studio persona in default greeting", res.xml?.includes("This is Sally.") ?? false);
+  }
+  {
+    // neverPromise: the default confirm line is a promise — it must be replaced.
+    const store = makeStore({ settings: { receptionist: { neverPromise: "Never quote prices." } } });
+    let res = await postVoice(store, { ...CALL_BASE });
+    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "my kitchen sink is leaking" });
+    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "512 555 0134" });
+    checkTrue("neverPromise confirm override spoken", res.xml?.includes("So I have that down. Would you like me to transfer you to someone right now, or stay on the line to leave a message?") ?? false);
+    checkTrue("neverPromise default promise line dropped", !(res.xml?.includes("will reach out shortly") ?? true));
+    // The policy rides the captured lead's notes.
+    checkTrue("neverPromise on lead notes", (store.leads[0]?.notes ?? "").includes("Owner policy — the AI must never promise: Never quote prices."));
+  }
+  {
+    // Emergency policies reach the emergency lead notes AND the notification.
+    const store = makeStore({ settings: { receptionist: { emergencyHandling: "Ask for the address first.", escalationNotes: "Commercial jobs go to Mike." } } });
+    await postVoice(store, { ...CALL_BASE });
+    await postVoice(store, { ...CALL_BASE, SpeechResult: "there is a gas smell in my house" });
+    checkTrue("emergency policies on lead notes", (store.leads[0]?.notes ?? "").includes("Owner emergency handling: Ask for the address first.") && (store.leads[0]?.notes ?? "").includes("Owner escalation rules: Commercial jobs go to Mike."));
+    const emergencyNote = store.notifications.find((n) => n.payload.emergencyHandling !== undefined);
+    checkTrue("emergencyHandling in notification payload", emergencyNote?.payload.emergencyHandling === "Ask for the address first.");
+    checkTrue("escalationNotes in notification payload", emergencyNote?.payload.escalationNotes === "Commercial jobs go to Mike.");
+    check("emergency still captured", store.leads.length, 1);
+  }
+  {
+    // Studio transferNumber wins over the legacy top-level key.
+    const store = makeStore({ settings: { transferNumber: "+15125550188", receptionist: { transferNumber: "+15125550199" } } });
+    let res = await postVoice(store, { ...CALL_BASE });
+    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "transfer me to someone" });
+    checkTrue("studio transfer target dialed", res.xml?.includes("<Dial>+15125550199</Dial>") ?? false);
+  }
+  {
+    // FAQ: utterances that match a configured FAQ get the answer spoken (pure
+    // flow level — the rules tier must not extract a need from the question).
+    const faqs = [{ id: "f1", question: "What are your business hours?", answer: "We are open seven days a week from eight to six." }];
+    const r = await stepCallFlow(initialFlowState(), "what are your business hours", { ...CTX, faqs });
+    checkTrue("faq answer spoken in need stage", r.action.kind === "speak_then_gather" && r.action.preamble[0] === faqs[0].answer);
+    checkTrue("faq flow resumes at need", r.action.kind === "speak_then_gather" && r.action.stage === "need");
+    // And in the callback_number stage a non-number answer re-asks.
+    const s2 = { ...initialFlowState(), stage: "callback_number" as const, serviceNeed: "leak" };
+    const r2 = await stepCallFlow(s2, "what are your business hours", { ...CTX, faqs });
+    checkTrue("faq answer in callback_number stage", r2.action.kind === "speak_then_gather" && r2.action.preamble[0] === faqs[0].answer);
+    checkTrue("faq keeps asking for the number", r2.action.kind === "speak_then_gather" && r2.action.stage === "callback_number");
+    // Without FAQs in context, identical input behaves exactly as pre-studio.
+    const r3 = await stepCallFlow(initialFlowState(), "what are your business hours", CTX);
+    checkTrue("no faqs in ctx → unchanged behavior", r3.action.kind === "gather");
+  }
+  {
+    // Company instructions reach the post-call summary prompt.
+    const store = makeStore({ settings: { receptionist: { instructions: "Flag renters differently." } } });
+    let res = await postVoice(store, { ...CALL_BASE });
+    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "my kitchen sink is leaking" });
+    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "512 555 0134" });
+    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "no that's all" });
+    checkTrue("summary goodbye", res.xml?.includes("Goodbye") ?? false);
+    check("instructions reached summarizeCall", store.summarizeInstructions[store.summarizeInstructions.length - 1], "Flag renters differently.");
   }
 })().then(() => {
   console.log("");
