@@ -117,13 +117,17 @@ export async function runReadinessProbe(): Promise<ReadinessReport> {
   try {
     const probe = (async () => {
       // One round trip for liveness + table presence (to_regclass never throws
-      // for a missing table — it returns NULL).
+      // for a missing table — it returns NULL). Positional aliases (c0..cN):
+      // the driver camelCases row keys, so snake_case table names cannot be
+      // aliases — c0..c7 survive the transform untouched.
       const selects = CRITICAL_TABLES.map(
-        (t) => `to_regclass('public.${t}') IS NOT NULL AS ${t}`,
+        (t, i) => `to_regclass('public.${t}') IS NOT NULL AS c${i}`,
       ).join(", ");
       const rows = (await sql().query(`SELECT ${selects}`)) as unknown as Array<Record<string, boolean>>;
       const row = rows[0] ?? {};
-      for (const t of CRITICAL_TABLES) tables[t] = row[t] === true;
+      CRITICAL_TABLES.forEach((t, i) => {
+        tables[t] = row["c" + i] === true;
+      });
       // Error count — only when the sink table itself exists.
       if (tables["system_errors"]) {
         const errRows = (await sql().query(

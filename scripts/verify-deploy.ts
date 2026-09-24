@@ -51,9 +51,9 @@ const artifact = await Bun.file(serverPath).exists();
 check("prod build artifact (dist/server/server.js)", artifact, artifact ? "" : "run `bun run build` first");
 if (!artifact) process.exit(1);
 // 2. Boot the prod build (prod-serve patches the DB driver config first).
-const proc = spawn("bun", ["scripts/prod-serve.ts", String(PORT)], {
+const proc = spawn("bun", ["scripts/prod-serve.ts"], {
   stdio: "inherit",
-  env: process.env,
+  env: { ...process.env, PORT: String(PORT) },
 });
 try {
   const up = await waitForServer(BASE);

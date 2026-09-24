@@ -140,7 +140,7 @@ async function runServeChecks(): Promise<void> {
     row("Runtime", "Routes render on a served prod build", "FAIL", "dist/ missing — run `bun run build`");
     return;
   }
-  const proc = spawn("bun", ["scripts/prod-serve.ts", String(PORT)], { stdio: "ignore", env: process.env });
+  const proc = spawn("bun", ["scripts/prod-serve.ts"], { stdio: "ignore", env: { ...process.env, PORT: String(PORT) } });
   try {
     let up = false;
     for (let i = 0; i < 50 && !up; i++) {
