@@ -133,3 +133,44 @@ run. What this buys, and how to use it:
 - **Extra safety for big changes:** before destructive maintenance (bulk
   deletes, schema surgery outside the migration runner), note the exact UTC
   timestamp in the PR/ticket first — it is the restore target if it goes wrong.
+
+## Knock email transport (P4)
+**Precedence rule (wired in `src/lib/server/email.ts`):** when `KNOCK_API_KEY`
+is set, **Knock is the PRIMARY email transport** and every notification email
+(new lead / appointment request / payment failure) triggers a Knock workflow.
+The Resend-style path (`EMAIL_API_KEY` + `EMAIL_FROM`) stays intact as the
+**fallback** when only `EMAIL_*` is set. Neither set → email is honestly
+"not configured" and sends fail fast. `logEmailStatus()` states which transport
+is active. In-app notifications are DB-native and independent of all of this.
+
+| Var | Meaning |
+|---|---|
+| `KNOCK_API_KEY` | Knock **secret** key (`sk_…`) — Bearer auth for the trigger API |
+| `KNOCK_WORKFLOW_KEY` | optional; default `missedcall-notify` |
+| `KNOCK_API_BASE` | optional; default `https://api.knock.app` |
+| `KNOCK_SIGNING_KEY` | **not consumed yet** — reserved for verifying Knock webhook callbacks (delivery/bounce events) when webhooks are wired |
+
+Trigger shape: `POST {KNOCK_API_BASE}/v1/workflows/{KNOCK_WORKFLOW_KEY}/trigger`
+with `{"recipients":[{"email":"<owner email>"}],"data":{"subject","body","html?"}}`.
+The workflow's email template renders `data` via Knock liquid
+(`{{ notification.data.subject }}` etc.).
+
+**Owner setup steps (Knock dashboard — workflow content is dashboard-only):**
+1. dashboard.knock.app → **Developers → API Keys**: copy the **Secret key**
+   (`sk_…`) and save it as `KNOCK_API_KEY` in Secrets.
+2. **Workflows → Create workflow**, key it `missedcall-notify` (or save a
+   different key and set `KNOCK_WORKFLOW_KEY`).
+3. In the workflow: add an **Email channel step**; set the From address/sender;
+   in the template use `{{ notification.data.subject }}` as the subject and
+   `{{ notification.data.body }}` as the body (optional "include if present"
+   block for `{{ notification.data.html }}`).
+4. **Commit/publish** the workflow (draft workflows never deliver).
+
+**2026-09 verification (real API, no spam sends):** the saved `KNOCK_API_KEY`
+returns `401 incorrect_token_type` ("You cannot call this endpoint with this
+token") on the trigger endpoint — the saved value is **not a secret key**.
+Save the `sk_…` secret key from Developers → API Keys; with it, the same call
+proves auth (a nonexistent workflow then answers `404 workflow_not_found`, as
+the unit tests cover). Until then notification emails **fail loudly-honestly**
+(`outcome: "failed"`, detail carries Knock's message) and email_sent_at is
+never stamped.
