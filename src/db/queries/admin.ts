@@ -400,15 +400,15 @@ export async function adminAggregateFunnelCounts(): Promise<FunnelCounts> {
   const lr = leadRows[0] as unknown as Record<string, unknown>;
   const cr = convRows[0] as unknown as Record<string, unknown>;
   const ar = apptRows[0] as unknown as Record<string, unknown>;
-  const missedCalls = toNumber(lr.missed_calls);
+  const missedCalls = toNumber(lr.missedCalls);
   return {
     callsReceived: missedCalls,
     callsHandledByAi: toNumber(cr.handled),
     missedCalls,
-    missedCallsRecovered: toNumber(lr.missed_recovered),
+    missedCallsRecovered: toNumber(lr.missedRecovered),
     leads: toNumber(lr.leads),
     qualified: toNumber(lr.qualified),
-    appointments: toNumber(ar.appt_leads),
+    appointments: toNumber(ar.apptLeads),
     won: toNumber(lr.won),
   };
 }

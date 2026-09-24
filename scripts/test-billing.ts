@@ -104,8 +104,16 @@ function walk(dir: string): void {
     if (!f.name.endsWith(".ts") && !f.name.endsWith(".tsx")) continue;
     // The landing page (routes/index.tsx) is a static marketing mockup with
     // illustrative tier copy — the P4-V landing-conversion build replaces it
-    // with pricing.ts-derived data. Product/billing code is held to the rule.
-    if (p.endsWith("lib/pricing.ts") || p.endsWith("routes/index.tsx")) continue;
+    // with pricing.ts-derived data. The legal policy pages (terms.tsx,
+    // privacy.tsx) QUOTE the subscription prices in legal prose; that is
+    // documentation of the config, not configuration. Product/billing code
+    // is held to the rule: if a code file hard-codes a price, this fails.
+    if (
+      p.endsWith("lib/pricing.ts") ||
+      p.endsWith("routes/index.tsx") ||
+      p.endsWith("routes/terms.tsx") ||
+      p.endsWith("routes/privacy.tsx")
+    ) continue;
     const src = readFileSync(p, "utf8");
     if (/14900|24900|\$149|\$249|sms_per_month:\s*\d|ai_turns_per_month:\s*\d/.test(src)) {
       offenders.push(p);

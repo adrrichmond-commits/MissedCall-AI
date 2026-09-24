@@ -126,7 +126,10 @@ export async function leadIdsWithConversations(businessId: string, leadIds: stri
     `SELECT DISTINCT lead_id FROM conversations WHERE business_id = $1 AND lead_id IN (${placeholders})`,
     [businessId, ...leadIds],
   );
-  return new Set((rows as unknown as { lead_id: string }[]).map((r) => r.lead_id));
+  // src/db.ts camelCase-ifies row keys: `SELECT DISTINCT lead_id` returns
+  // rows keyed `leadId`. Reading snake_case here would always yield an empty
+  // set (found by the P3-H isolation suite).
+  return new Set((rows as unknown as { leadId: string }[]).map((r) => r.leadId));
 }
 
 export interface ConversationSummaryRow {
@@ -153,13 +156,15 @@ export async function conversationSummariesForLead(
     ORDER BY c.updated_at DESC`;
   return (rows as unknown as {
     id: string; status: ConversationStatus; summary: string | null;
-    message_count: unknown; last_message_at: Date | null;
+    messageCount: unknown; lastMessageAt: Date | null;
   }[]).map((r) => ({
     id: r.id,
     status: r.status,
     summary: r.summary,
-    messageCount: Number(r.message_count),
-    lastMessageAt: r.last_message_at,
+    // Aliases arrive camelCased (src/db.ts key mapping) — snake_case reads
+    // would be undefined (messageCount NaN / lastMessageAt undefined).
+    messageCount: Number(r.messageCount),
+    lastMessageAt: r.lastMessageAt,
   }));
 }
 
