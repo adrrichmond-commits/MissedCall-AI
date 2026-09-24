@@ -13,6 +13,13 @@ if (process.env.USE_LOCAL_POSTGRES === "1") {
 }
 
 export default defineConfig({
+  // P3-H stale-deploy recovery: a fresh id per build, baked into both the
+  // client and SSR bundles (declare in src/types/globals.d.ts). The inline
+  // <head> chunk-recovery script in src/lib/chunkRecovery.ts uses it as the
+  // "auto-reload once per deploy" guard key — see that module.
+  define: {
+    __MCA_BUILD_ID__: JSON.stringify(`b${Date.now().toString(36)}`),
+  },
   server: {
     port: 3000,
     host: true,

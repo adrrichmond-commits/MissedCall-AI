@@ -32,6 +32,10 @@ function InboxPage() {
   const [thread, setThread] = useState<InboxThreadData | null>(null);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
+  // P3-H state sweep: retry bumps this nonce so a failed thread load actually
+  // re-fetches. (Navigating to the already-selected conversation was a no-op —
+  // the effect only ran on selectedId changes — so "Try again" did nothing.)
+  const [threadNonce, setThreadNonce] = useState(0);
 
   useEffect(() => {
     if (!selectedId) {
@@ -63,7 +67,7 @@ function InboxPage() {
     return () => {
       alive = false;
     };
-  }, [selectedId]);
+  }, [selectedId, threadNonce]);
 
   function selectConversation(id: string) {
     navigate({ to: "/inbox", search: { c: id } });
@@ -134,7 +138,7 @@ function InboxPage() {
           ) : threadError ? (
             <div className="flex flex-1 items-center justify-center p-8">
               <div className="w-full max-w-md">
-                <ErrorState message={threadError} onRetry={() => selectConversation(selectedId!)} />
+                <ErrorState message={threadError} onRetry={() => setThreadNonce((n) => n + 1)} />
               </div>
             </div>
           ) : !thread ? (

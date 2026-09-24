@@ -29,6 +29,20 @@ const freePort =
   `kill $pids 2>/dev/null || true; sleep 0.2; ` +
   `done`;
 
+// P3-H cache discipline (see src/lib/chunkRecovery.ts):
+//   - Hashed /assets/* are content-addressed — cache them forever; the names
+//     change with the content, so an old cached copy can never be wrong.
+//   - SSR HTML must revalidate on every request. A browser (or proxy) serving
+//     yesterday's HTML is exactly what breaks hashed-chunk references after a
+//     deploy ("Importing a module script failed" + dead page). no-store makes
+//     the chunk-recovery auto-reload actually fetch the new document.
+//   - Everything else from the handler is dynamic (server-fn RPC, API JSON) —
+//     never cached. Real static files are served from disk above this branch.
+function cacheHeadersFor(pathname: string): string {
+  if (pathname.startsWith("/assets/")) return "public, max-age=31536000, immutable";
+  return "no-store";
+}
+
 // Take over the port, re-freeing and retrying if another publish grabbed it in the
 // gap between freeing and binding (last publish wins). Bun.serve throws EADDRINUSE
 // synchronously, so without this a raced publish would die while the shell already
@@ -43,9 +57,24 @@ for (let attempt = 1; ; attempt++) {
         const { pathname } = new URL(req.url);
         if (pathname !== "/") {
           const file = Bun.file(CLIENT_DIR + pathname);
-          if (await file.exists()) return new Response(file);
+          if (await file.exists()) {
+            // Pass BunFile's inferred Content-Type through explicitly: a bare
+            // new Headers() here would drop it and break JS/CSS MIME handling.
+            return new Response(file, {
+              headers: {
+                "Content-Type": file.type || "application/octet-stream",
+                "Cache-Control": cacheHeadersFor(pathname),
+              },
+            });
+          }
         }
-        return (handler as { fetch: (r: Request) => Response | Promise<Response> }).fetch(req);
+        const res = await (handler as { fetch: (r: Request) => Response | Promise<Response> }).fetch(req);
+        const headers = new Headers(res.headers);
+        // no-store on HTML documents so every load revalidates against the
+        // latest deploy; RPC/API responses are dynamic and never cached either.
+        const isHtml = (headers.get("content-type") ?? "").includes("text/html");
+        headers.set("Cache-Control", isHtml ? "no-store, must-revalidate" : "no-store");
+        return new Response(res.body, { status: res.status, headers });
       },
     });
     break;

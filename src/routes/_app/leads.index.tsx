@@ -11,6 +11,7 @@ import {
   StatusBadge,
 } from "~/components/app/pageStates";
 import { formatDate, formatMoney, labelEnum } from "~/lib/format";
+import { Button } from "~/components/ui/Button";
 
 type LeadSearch = {
   status?: string;
@@ -151,6 +152,13 @@ function LeadsPage() {
             search.search || search.status || search.source || search.priority
               ? "Try clearing the search or choosing a different status, priority, or source."
               : "Leads appear here as soon as your first missed call is captured."
+          }
+          action={
+            search.search || search.status || search.source || search.priority ? (
+              <Button size="sm" variant="secondary" onClick={() => updateSearch({ search: undefined })}>
+                Clear filters
+              </Button>
+            ) : null
           }
         />
       ) : (

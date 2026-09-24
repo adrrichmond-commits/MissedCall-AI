@@ -1,8 +1,8 @@
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-
+import { NotFoundState, RouteError } from "~/components/app/pageStates";
+import { CHUNK_RECOVERY_SCRIPT } from "~/lib/chunkRecovery";
 import appCss from "~/styles/app.css?url";
-
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -16,11 +16,16 @@ export const Route = createRootRoute({
       },
     ],
     links: [{ rel: "stylesheet", href: appCss }],
+    // P3-H stale-deploy recovery: runs inline BEFORE any bundled module, so it
+    // catches pre-mount script-tag failures too (the exact owner-reported
+    // "Importing a module script failed" dead page after a deploy). See
+    // src/lib/chunkRecovery.ts for the guard/loop-prevention design.
+    scripts: [{ tag: "script", children: CHUNK_RECOVERY_SCRIPT }],
   }),
-  notFoundComponent: () => <div>Page not found</div>,
+  notFoundComponent: NotFoundState,
+  errorComponent: RouteError,
   component: RootComponent,
 });
-
 function RootComponent() {
   return (
     <RootDocument>
@@ -28,7 +33,6 @@ function RootComponent() {
     </RootDocument>
   );
 }
-
 function RootDocument({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
