@@ -10,18 +10,20 @@
  * anonymously. Deliberately OPAQUE: the body never carries error text,
  * connection strings, or stack traces — only the boolean db bit.
  *
- * IMPORT-PROTECTION PATTERN (mirrors platformAdminGateFn in adminFns.ts /
- * admin.tsx): this client-reachable route module imports ONLY a
- * createServerFn module. All server logic — the `SELECT 1` probe, timeout,
- * error swallowing — lives in ~/lib/server/healthFns.ts; this file is a thin
- * RPC shim that maps the report onto HTTP status codes. Method routing is
+ * PROBE CALL PATH (prod-500 postmortem): this handler calls the PLAIN
+ * `runHealthProbe()` from ~/lib/server/healthProbe.ts directly. It must NOT
+ * call the `healthCheckFn` RPC wrapper — in the production build that compiles
+ * to an HTTP self-call (createSsrRpc) which 500s behind the hosting proxy.
+ * All server logic — the `SELECT 1` probe, timeout, error swallowing — lives
+ * in ~/lib/server/healthProbe.ts; this file is a thin shim that maps the
+ * report onto HTTP status codes. Method routing is
  * honest: non-GET is 405, never a silent 200 (webhook convention).
  */
 import { createFileRoute } from "@tanstack/react-router";
-import { healthCheckFn } from "~/lib/server/healthFns";
+import { runHealthProbe } from "~/lib/server/healthProbe";
 
 async function handleGet(): Promise<Response> {
-  const report = await healthCheckFn();
+  const report = await runHealthProbe();
   return Response.json(report, {
     status: report.ok ? 200 : 503,
     // Health answers must never be cached — a monitor polls for the truth.
