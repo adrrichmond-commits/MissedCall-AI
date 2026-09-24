@@ -2,10 +2,11 @@
  * Call-transfer rules for the AI voice receptionist (P3-E) — PURE module.
  *
  * Where the transfer number comes from (in precedence order):
- *   1. settings.transferNumber — legacy top-level key (kept for backward
- *      compatibility with blobs written before the receptionist studio).
- *   2. settings.receptionist.transferNumber — the receptionist studio's
- *      explicit transfer target (P4-O; the studio writes THIS key).
+ *   1. settings.receptionist.transferNumber — the receptionist studio's
+ *      explicit transfer target (P4-O; the studio writes THIS key, and as the
+ *      owner's most recent edit it wins over any legacy value).
+ *   2. settings.transferNumber — legacy top-level key (nothing in the app
+ *      writes it anymore; kept so hand-written settings blobs keep working).
  *   3. businesses.phone — the shop's main line, normalized.
  *   4. null — no transfer is possible; every emergency/after-hours/human
  *      path falls to the voicemail wrapup instead (honest degradation, the
@@ -77,7 +78,7 @@ export function resolveTransferRules(
       ? receptionist.transferNumber
       : null;
   const transferNumber =
-    normalizeTransferNumber(legacy) ?? normalizeTransferNumber(studio) ?? normalizeTransferNumber(prefs.businessPhone);
+    normalizeTransferNumber(studio) ?? normalizeTransferNumber(legacy) ?? normalizeTransferNumber(prefs.businessPhone);
   const offersTransfer =
     transferNumber != null &&
     (trigger === "emergency" ||
