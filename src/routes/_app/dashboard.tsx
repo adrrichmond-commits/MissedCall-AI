@@ -13,6 +13,11 @@ import {
 import { formatDateTime, formatMoney, formatRelative } from "~/lib/format";
 
 export const Route = createFileRoute("/_app/dashboard")({
+  // ?welcome=done — set by the onboarding finish step; renders the one-time
+  // "you're live" panel below. Any non-empty value normalizes to "done".
+  validateSearch: (s: Record<string, unknown>): { welcome?: string } => ({
+    welcome: typeof s.welcome === "string" && s.welcome !== "" ? "done" : undefined,
+  }),
   loader: async () => {
     const res = await getDashboardDataFn();
     if (!res.ok) throw new Error(res.error);
@@ -25,8 +30,43 @@ export const Route = createFileRoute("/_app/dashboard")({
   component: DashboardPage,
 });
 
+/**
+ * P4-O: the "you're live" landing state a plumber sees right after finishing
+ * onboarding. Dismissible; honest about provider-gated delivery.
+ */
+function WelcomePanel() {
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return (
+    <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 p-5 sm:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-green-900">🎉 You're live!</h2>
+          <p className="mt-1 max-w-prose text-sm leading-relaxed text-green-900">
+            MissedCall AI is set up and watching your line. When a call goes unanswered, your
+            caller gets a text-back, the AI captures what they need, and the lead shows up here.
+          </p>
+          <p className="mt-2 max-w-prose text-xs leading-relaxed text-green-800">
+            Texts and calls switch on automatically once the messaging provider is connected —
+            your setup and data are ready now. Tune everything anytime in Settings.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Dismiss welcome message"
+          className="shrink-0 rounded-md p-1 text-green-700 hover:bg-green-100"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DashboardPage() {
   const data = Route.useLoaderData();
+  const { welcome } = Route.useSearch();
 
   return (
     <div>
@@ -34,6 +74,8 @@ function DashboardPage() {
         title="Dashboard"
         description="A live view of your missed-call leads, conversations, and booked work."
       />
+
+      {welcome ? <WelcomePanel /> : null}
 
       {/* P3-D: Revenue Recovered — the primary KPI card */}
       <RevenueCard revenue={data.revenue} />
