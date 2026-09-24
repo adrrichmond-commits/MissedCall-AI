@@ -25,15 +25,8 @@ import {
   MAX_EXCHANGES} from "../src/lib/voice/callFlow";
 import { resolveTransferRules, normalizeTransferNumber } from "../src/lib/voice/transferRules";
 import {
-  receptionistConfigFromSettings,
   resolveReceptionistGreeting,
-  confirmPromptOverride,
-  matchFaq,
-  policyNotesForLead,
   sanitizeReceptionistConfig,
-  validateReceptionistInput,
-  coerceFlowState,
-  NEUTRAL_CONFIRM_PROMPT,
   type ReceptionistConfig,
 } from "../src/lib/voice/receptionistConfig";
 import {
@@ -630,8 +623,8 @@ const CALL_BASE = {
   {
     // Emergency policies reach the emergency lead notes AND the notification.
     const store = makeStore({ settings: { receptionist: { emergencyHandling: "Ask for the address first.", escalationNotes: "Commercial jobs go to Mike." } } });
-    let res = await postVoice(store, { ...CALL_BASE });
-    res = await postVoice(store, { ...CALL_BASE, SpeechResult: "there is a gas smell in my house" });
+    await postVoice(store, { ...CALL_BASE });
+    await postVoice(store, { ...CALL_BASE, SpeechResult: "there is a gas smell in my house" });
     checkTrue("emergency policies on lead notes", (store.leads[0]?.notes ?? "").includes("Owner emergency handling: Ask for the address first.") && (store.leads[0]?.notes ?? "").includes("Owner escalation rules: Commercial jobs go to Mike."));
     const emergencyNote = store.notifications.find((n) => n.payload.emergencyHandling !== undefined);
     checkTrue("emergencyHandling in notification payload", emergencyNote?.payload.emergencyHandling === "Ask for the address first.");
@@ -659,7 +652,7 @@ const CALL_BASE = {
     checkTrue("faq keeps asking for the number", r2.action.kind === "speak_then_gather" && r2.action.stage === "callback_number");
     // Without FAQs in context, identical input behaves exactly as pre-studio.
     const r3 = await stepCallFlow(initialFlowState(), "what are your business hours", CTX);
-    checkTrue("no faqs in ctx → unchanged behavior", r3.action.kind, "gather");
+    checkTrue("no faqs in ctx → unchanged behavior", r3.action.kind === "gather");
   }
   {
     // Company instructions reach the post-call summary prompt.
