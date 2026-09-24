@@ -149,6 +149,43 @@ function HealthPage() {
           connection.
         </p>
       </section>
+      {/* P4-I: in-app error sink — recent unhandled errors + failed deliveries */}
+      <section className="mt-5 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Recent system errors
+          </h2>
+          <Badge tone={h.systemErrorCount1h > 0 ? "amber" : "green"}>
+            {h.systemErrorCount1h} in the last hour
+          </Badge>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Recorded by the in-app error sink (system_errors): unhandled route/server errors, failed
+          SMS deliveries, and degraded voice calls. Also exposed as a count on /api/healthz/ready
+          for external uptime monitors.
+        </p>
+        {h.systemErrors.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">No errors recorded. The sink is armed and empty.</p>
+        ) : (
+          <ul className="mt-3 max-h-80 space-y-2 overflow-y-auto text-sm">
+            {h.systemErrors.map((e) => (
+              <li key={e.id} className="rounded-lg border border-slate-200 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-xs text-slate-500">{e.source}</span>
+                  <span className="flex items-center gap-2">
+                    <Badge tone={e.severity === "error" ? "red" : "amber"}>{e.severity}</Badge>
+                    <span className="text-xs text-slate-400">{formatDateTime(e.createdAt)}</span>
+                  </span>
+                </div>
+                <p className="mt-1 break-words text-slate-700">{e.message}</p>
+                {e.businessId ? (
+                  <p className="mt-1 font-mono text-[11px] text-slate-400">business {e.businessId}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

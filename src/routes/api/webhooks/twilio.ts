@@ -16,6 +16,8 @@
  * server-route pipeline; there is no createAPIFileRoute export in 1.158).
  */
 import { createFileRoute } from "@tanstack/react-router";
+import { checkRateLimit, clientIpFromHeaders } from "~/lib/server/rateLimit";
+import { guardApiRoute } from "~/lib/server/errorSink";
 import { isSmsConfigured, readSmsConfig } from "~/lib/server/sms";
 import { TWILIO_SIGNATURE_HEADER, twilioSignatureIsValid } from "~/lib/server/twilioSignature";
 import { handleInboundSms } from "~/lib/server/textBack";
@@ -34,6 +36,15 @@ interface TwilioInboundParams {
 }
 
 async function handlePost(request: Request): Promise<Response> {
+  // 0. P4-I per-IP rate limit (generous: Twilio bursts + retries fit). A
+  //    429 tells Twilio to retry on its own schedule — nothing is dropped.
+  const rl = checkRateLimit("twilio_webhook", clientIpFromHeaders(request.headers));
+  if (!rl.allowed) {
+    return Response.json(
+      { error: "rate_limited", message: "Too many webhook requests from this source. Retry after " + rl.retryAfterSec + "s." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } },
+    );
+  }
   // 1. Honest gate: without Twilio credentials this endpoint cannot verify or
   //    process anything — 503, never a silent accept.
   if (!isSmsConfigured()) {
@@ -117,7 +128,10 @@ export const Route = createFileRoute("/api/webhooks/twilio")({
   server: {
     handlers: {
       // Handler receives the route-method ctx ({ request, params, ... }).
-      POST: ({ request }: { request: Request }) => handlePost(request),
+      // P4-I: guardApiRoute records any UNEXPECTED throw in system_errors
+      // (visible on /admin/health) and answers a clean 500 — the handled
+      // error contracts above (403/404/503 JSON) are unchanged.
+      POST: ({ request }: { request: Request }) => guardApiRoute("api_route:twilio_sms", handlePost)(request),
     },
   },
 });

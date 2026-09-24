@@ -72,3 +72,84 @@ export async function runHealthProbe(): Promise<HealthReport> {
     if (timer) clearTimeout(timer);
   }
 }
+// ---------------------------------------------------------------------------
+// P4-I: DEEP readiness probe (/api/healthz/ready).
+//
+// Liveness (/api/healthz) answers "is the process up"; readiness answers
+// "can the product actually serve customers": DB reachable, every critical
+// table present (migrations applied), and a recent-error count from the
+// system_errors sink. Monitors point at liveness for alerting-on-down and
+// at readiness for alerting-on-degraded. Unauthenticated like liveness —
+// the payload carries counts/booleans only, never rows or error text.
+// ---------------------------------------------------------------------------
+/** Tables the product cannot serve a customer without (migration 016 included). */
+export const CRITICAL_TABLES = [
+  "businesses",
+  "users",
+  "sessions",
+  "leads",
+  "conversations",
+  "appointments",
+  "notifications",
+  "system_errors",
+] as const;
+export interface ReadinessReport {
+  ok: boolean;
+  db: boolean;
+  /** One entry per critical table: true when the table exists (migration applied). */
+  tables: Record<string, boolean>;
+  /** system_errors rows in the trailing window; null when the table is missing. */
+  recentErrors: number | null;
+  /** Minutes the error count covers (fixed, part of the monitor contract). */
+  errorWindowMinutes: number;
+  uptimeSec: number;
+  timestamp: string;
+}
+const READINESS_TIMEOUT_MS = 5000;
+export const READINESS_ERROR_WINDOW_MINUTES = 60;
+export async function runReadinessProbe(): Promise<ReadinessReport> {
+  const timestamp = new Date().toISOString();
+  const uptimeSec = Math.floor(process.uptime());
+  const tables = Object.fromEntries(CRITICAL_TABLES.map((t) => [t, false])) as Record<string, boolean>;
+  let db = false;
+  let recentErrors: number | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const probe = (async () => {
+      // One round trip for liveness + table presence (to_regclass never throws
+      // for a missing table — it returns NULL). Positional aliases (c0..cN):
+      // the driver camelCases row keys, so snake_case table names cannot be
+      // aliases — c0..c7 survive the transform untouched.
+      const selects = CRITICAL_TABLES.map(
+        (t, i) => `to_regclass('public.${t}') IS NOT NULL AS c${i}`,
+      ).join(", ");
+      const rows = (await sql().query(`SELECT ${selects}`)) as unknown as Array<Record<string, boolean>>;
+      const row = rows[0] ?? {};
+      CRITICAL_TABLES.forEach((t, i) => {
+        tables[t] = row["c" + i] === true;
+      });
+      // Error count — only when the sink table itself exists.
+      if (tables["system_errors"]) {
+        const errRows = (await sql().query(
+          `SELECT count(*)::int AS n FROM system_errors WHERE created_at > now() - ('1 hour')::interval`,
+        )) as unknown as Array<{ n: number }>;
+        recentErrors = errRows[0]?.n ?? 0;
+      }
+    })();
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("readiness probe timed out")), READINESS_TIMEOUT_MS);
+    });
+    await Promise.race([probe, timeout]);
+    db = true;
+  } catch (e) {
+    console.error(
+      "[healthz-ready] probe failed:",
+      e instanceof Error ? e.message : e,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const allTablesOk = CRITICAL_TABLES.every((t) => tables[t]);
+  const ok = db && allTablesOk;
+  return { ok, db, tables, recentErrors, errorWindowMinutes: READINESS_ERROR_WINDOW_MINUTES, uptimeSec, timestamp };
+}

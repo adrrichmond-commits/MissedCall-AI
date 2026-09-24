@@ -61,7 +61,8 @@ import {
   DEFAULT_GREETING,
   type TwiMLElement,
 } from "~/lib/voice/twiml";
-import { resolveTransferRules } from "~/lib/voice/transferRules";
+import { normalizeTransferNumber, resolveTransferRules } from "~/lib/voice/transferRules";
+import { captureSystemError } from "~/lib/server/errorSink";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { PipelineLlm } from "~/lib/server/classifyPipeline";
 
@@ -297,7 +298,15 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
     })
     .catch(() => ({ call: null, created: false }) as unknown as { call: Call; created: boolean });
   if (!call) {
-    // DB failure mid-call: apologize-and-transfer/voicemail (documented).
+    // DB failure mid-call: apologize-and-transfer/voicemail (documented),
+    // P4-I: the failure is RECORDED (system_errors → /admin/health), and
+    // the caller still reaches a human or a voicemail — never a dead end.
+    captureSystemError({
+      source: "voice_call",
+      businessId: business.id,
+      message: "Voice call served degraded (call row unavailable - DB trouble): " + (p.CallSid ?? "unknown-sid"),
+      detail: { callSid: p.CallSid ?? null, from: p.From ?? null, to: p.To ?? null, flow: "db_down" },
+    });
     return { status: 200, xml: dbDownXml(args.url, business) };
   }
 
@@ -375,7 +384,10 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
       },
       state.emergency ? "emergency" : "human_request",
     );
-    transferedTo = rules.transferNumber;
+    // P4-I: env-gated platform fallback — when the business has no verified
+    // transfer number, TWILIO_VOICE_FORWARD_NUMBER (if set) is the last resort
+    // before voicemail. Unset (default) → null → voicemail, exactly as before.
+    transferedTo = rules.transferNumber ?? platformFallbackTransferNumber();
     status = "transfered";
     if (state.emergency && !leadCaptured) {
       // Lead capture (8d) already fired the emergency notification — only
@@ -483,6 +495,16 @@ async function verifySignature(
   return twilioSignatureIsValid({ url, params: allParams, signature, authToken });
 }
 
+/**
+ * P4-I: platform-level human-transfer fallback, env-gated and DORMANT unless
+ * the owner sets TWILIO_VOICE_FORWARD_NUMBER (an E.164 number you control).
+ * It is the LAST rung of the voice failure ladder — used only when the
+ * business has no verified transfer target and the AI path is degraded —
+ * so it can never hijack a healthy business-configured transfer.
+ */
+export function platformFallbackTransferNumber(): string | null {
+  return normalizeTransferNumber(process.env.TWILIO_VOICE_FORWARD_NUMBER ?? null);
+}
 /** DB-down TwiML: apologize, transfer when possible, else voicemail. */
 function dbDownXml(url: string, business: { name: string; phone: string | null }): string {
   const rules = resolveTransferRules(
@@ -495,7 +517,8 @@ function dbDownXml(url: string, business: { name: string; phone: string | null }
   );
   return apologyDocument(
     "We're having technical trouble. Please hold while we transfer you, or leave a message after the beep.",
-    rules.transferNumber,
+    // P4-I: platform forward fallback (env-gated) before falling to voicemail.
+    rules.transferNumber ?? platformFallbackTransferNumber(),
     url,
   );
 }

@@ -58,7 +58,7 @@ jobs:
 
       - name: Unit suites (mock-based, no external services)
         run: |
-          suites="admin billing classify crm email kb pipeline revenue sms stripe voice"
+          suites="admin billing classify crm email kb pipeline revenue sms stripe voice infra"
           for t in $suites; do
             echo "::group::bun scripts/test-$t.ts"
             if bun "scripts/test-$t.ts"; then
@@ -69,7 +69,13 @@ jobs:
               exit 1
             fi
           done
-
+      # P4-I owner requirement 20: automated launch-readiness checklist.
+      # Warn-only initially (non-blocking): a FAIL here surfaces as a
+      # annotation/warning on the PR but does not gate the merge. The HARD
+      # pre-publish gate is scripts/verify-deploy.ts, run before publish_site.
+      - name: Launch-readiness checklist (warn-only)
+        continue-on-error: true
+        run: bun scripts/launch-checklist.ts
   smoke-and-isolation:
     name: Smoke + isolation (Postgres + prod build)
     runs-on: ubuntu-latest
