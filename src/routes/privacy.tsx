@@ -243,6 +243,10 @@ function Privacy() {
             Terms &amp; Conditions
           </a>
           <span className="mx-2">·</span>
+          <a href="/sms-consent" className="text-brand-600 hover:text-brand-700">
+            SMS Messaging
+          </a>
+          <span className="mx-2">·</span>
           <a href="/" className="text-brand-600 hover:text-brand-700">
             ← Back to MissedCall AI
           </a>
