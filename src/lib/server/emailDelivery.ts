@@ -6,9 +6,9 @@
  *   - Only the business-critical types are emailed: new_lead,
  *     appointment_requested, payment_failed (EMAIL_DELIVERY_TYPES). Everything
  *     else is a silent skip.
- *   - Runs ONLY when the email provider is configured (EMAIL_API_KEY +
- *     EMAIL_FROM) AND the business has an owner/manager/employee email to
- *     deliver to. Unconfigured is an expected, silent state — never an error.
+ *   - Runs ONLY when an email transport is configured (Knock via KNOCK_API_KEY
+ *     — primary — or the Resend-style EMAIL_API_KEY + EMAIL_FROM fallback) AND
+ *     the business has an owner/manager/employee email to deliver to. Unconfigured is an expected, silent state — never an error.
  *   - NEVER blocks or throws into the caller: the in-app notification insert
  *     is the source of truth and must not fail because email did. Every
  *     failure path logs and returns honestly.
@@ -177,7 +177,7 @@ async function attemptNotificationEmail(
       outcome: "skipped_not_configured",
       notificationId: args.notificationId,
       emailId: null,
-      detail: "EMAIL_API_KEY / EMAIL_FROM not set - email delivery disabled",
+      detail: "no email transport configured (KNOCK_API_KEY / EMAIL_API_KEY + EMAIL_FROM missing) - email delivery disabled",
     };
   }
   // 3. Double-send guard: email_sent_at already stamped → never again.
