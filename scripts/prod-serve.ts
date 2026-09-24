@@ -32,7 +32,7 @@ if (process.env.USE_LOCAL_POSTGRES === "1") {
 
 // Non-literal path on purpose: dist/ is build output outside tsconfig, so a
 // static import specifier would fail typecheck; resolving at runtime is fine.
-const serverPath = "./dist/server/server.js";
+const serverPath = new URL("../dist/server/server.js", import.meta.url).pathname;
 const { default: handler } = (await import(serverPath)) as { default: unknown };
 const PORT = Number(process.env.PORT ?? 3210);
 const HOST = "127.0.0.1";
