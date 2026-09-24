@@ -5,6 +5,7 @@
  */
 import type { ReactNode } from "react";
 import { Badge } from "~/components/ui/Badge";
+import { recoverFromChunkErrorIfStale } from "~/lib/chunkRecovery";
 
 export function PageHeader({
   title,
@@ -131,6 +132,51 @@ export function ErrorState({ message, onRetry }: { message?: string; onRetry?: (
           Try again
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Route-level error boundary (P3-H): stale-deploy chunk failures hand off to
+ * the inline <head> recovery script (one guarded auto-reload per build, then a
+ * friendly fallback page); everything else gets the standard ErrorState with a
+ * retry. Used as the root/default errorComponent so no route can render a raw
+ * error dump to an owner.
+ */
+export function RouteError({ error }: { error: unknown }) {
+  if (recoverFromChunkErrorIfStale(error)) {
+    // Recovery took over: it either reloaded the page or painted its own
+    // full-screen fallback. Render a quiet placeholder so nothing flashes.
+    return <div className="min-h-[50vh]" aria-hidden="true" />;
+  }
+  const detail = error instanceof Error ? error.message : undefined;
+  return (
+    <div className="p-4 sm:p-6">
+      <ErrorState
+        message={detail ? `This page hit a problem: ${detail}` : "This page hit a problem. Try again in a moment."}
+        onRetry={() => window.location.reload()}
+      />
+    </div>
+  );
+}
+
+/** Shared friendly 404 body for the root + default notFound components. */
+export function NotFoundState() {
+  return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 px-6 text-center">
+      <p className="text-5xl" aria-hidden="true">
+        🔎
+      </p>
+      <h1 className="text-xl font-bold text-slate-900">Page not found</h1>
+      <p className="max-w-sm text-sm text-slate-600">
+        The page you're looking for doesn't exist or may have moved.
+      </p>
+      <a
+        href="/"
+        className="mt-2 inline-flex h-10 items-center rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700"
+      >
+        Back to MissedCall AI
+      </a>
     </div>
   );
 }

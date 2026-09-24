@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   cancelSubscriptionFn,
   getBillingDetailsFn,
@@ -281,19 +281,61 @@ function BillingDetailsSection() {
   const [details, setDetails] = useState<BillingOverviewP3F | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const load = () => {
-    getBillingDetailsFn().then((res) => {
-      if (res.ok) setDetails(res.data);
-    }).catch(() => undefined);
-  };
-  useState(() => load());
-  if (!details) return null;
+  // P3-H state sweep: usage/history load with explicit loading + error states
+  // and a working retry. (The previous `useState(() => load())` ran a fetch as
+  // a render side-effect, could double-fire, and swallowed failures silently.)
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [reloadNonce, setReloadNonce] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    setLoadState("loading");
+    getBillingDetailsFn()
+      .then((res) => {
+        if (!alive) return;
+        if (res.ok) {
+          setDetails(res.data);
+          setLoadState("ready");
+        } else {
+          setLoadState("error");
+        }
+      })
+      .catch(() => {
+        if (alive) setLoadState("error");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [reloadNonce]);
+  if (loadState === "loading") {
+    return (
+      <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6" aria-busy="true">
+        <h3 className="text-base font-semibold text-slate-900">Usage this billing period</h3>
+        <div className="mt-4 animate-pulse space-y-4" role="status" aria-label="Loading usage and billing history">
+          {[0, 1].map((i) => (
+            <div key={i} className="h-2 w-full rounded-full bg-slate-100" />
+          ))}
+          <div className="h-16 w-full rounded bg-slate-50" />
+        </div>
+      </section>
+    );
+  }
+  if (loadState === "error" || !details) {
+    return (
+      <section className="mt-8">
+        <ErrorState
+          message="Usage and billing history couldn't load. Check your connection and retry."
+          onRetry={() => setReloadNonce((n) => n + 1)}
+        />
+      </section>
+    );
+  }
   const reactivate = async () => {
     setBusy(true);
     const res = await reactivateSubscriptionFn();
     setBusy(false);
     setNote(res.ok ? res.data.message : res.error);
-    load();
+    // Re-read usage/history after reactivation (was load(), pre-refactor).
+    setReloadNonce((n) => n + 1);
   };
   return (
     <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
