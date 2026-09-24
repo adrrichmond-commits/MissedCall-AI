@@ -16,6 +16,7 @@
  * comes from the authenticated session, never from client input.
  */
 import { getSessionFromRequest } from "~/lib/server/auth.server";
+import { isLlmConfigured } from "~/lib/server/llm";
 import { isSmsConfigured } from "~/lib/server/sms";
 import { receptionistConfigFromSettings, type ReceptionistConfig } from "~/lib/voice/receptionistConfig";
 
@@ -34,6 +35,8 @@ export interface ReceptionistStudioView {
    * says exactly that, never "live calling is available".
    */
   smsProviderConfigured: boolean;
+  /** P4 audit: the LLM env is present (the preview's language tier is really live). */
+  llmConfigured: boolean;
 }
 
 /** Resolve the studio view for the signed-in session (null when signed out). */
@@ -51,5 +54,6 @@ export async function receptionistStudioView(): Promise<ReceptionistStudioView |
     config: receptionistConfigFromSettings(b.settings),
     savedAt,
     smsProviderConfigured: isSmsConfigured(),
+    llmConfigured: isLlmConfigured(),
   };
 }

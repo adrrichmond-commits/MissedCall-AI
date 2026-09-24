@@ -825,8 +825,14 @@ function NotificationsSection({
   return (
     <SectionCard title="Notifications" description="Choose what MissedCall AI tells you about.">
       <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200">
-        Your choices are saved now. Email/SMS delivery switches on when the messaging provider is connected (Phase 2) —
-        nothing is sent until then.
+        Your choices are saved now.{" "}
+        {view.providerStatus.emailTransport !== null
+          ? "Email alerts (new leads, appointment requests, payment failures) are on — they deliver through your MissedCall AI email channel."
+          : "Email alerts switch on when the email provider is connected."}{" "}
+        {view.providerStatus.smsConfigured
+          ? "SMS texts switch on once carrier campaign approval (A2P) comes through."
+          : "SMS texts switch on when the texting provider is connected."}{" "}
+        Nothing is sent until each channel is live.
       </p>
       <form onSubmit={onSubmit} className="space-y-2">
         {NOTIFICATION_PREF_KEYS.map((key) => (
@@ -906,8 +912,13 @@ function EmergencySection({
   return (
     <SectionCard title="Emergency prefs" description="How the AI handles emergency calls and alerts you.">
       <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200">
-        Preferences are saved now. Emergency email/SMS delivery switches on when the messaging
-        provider is connected (Phase 2) — nothing is sent until then.
+        Preferences are saved now. Emergency email alerts deliver through your MissedCall AI email channel
+        {view.providerStatus.emailTransport !== null ? " (connected)" : " once the email provider is connected"}; emergency
+        SMS texts{" "}
+        {view.providerStatus.smsConfigured
+          ? "start once carrier campaign approval (A2P) comes through"
+          : "switch on when the texting provider is connected"}
+        {" "}— nothing is sent until then.
       </p>
       <form onSubmit={onSubmit} className="space-y-3">
         {toggles.map((t) => (

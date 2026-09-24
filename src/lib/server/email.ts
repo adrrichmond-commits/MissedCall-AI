@@ -1,27 +1,35 @@
 /**
- * Transactional email service (Phase 2 build #6 pre-wire).
+ * Transactional email service (Phase 2 build #6 pre-wire; P4 Knock wiring).
  *
- * Sends email through a plain HTTP API provider (Resend-style POST /emails
- * with a Bearer token) — no SDK dependency, mirroring how sms.ts talks to
- * Twilio with bare fetch. nodemailer is intentionally NOT added: it is not in
+ * TRANSPORT PRECEDENCE (the seam callers use — sendEmail() is unchanged):
+ *   1. Knock (PRIMARY)   when KNOCK_API_KEY is set  — see src/lib/server/knock.ts
+ *   2. Resend-style HTTP fallback when EMAIL_API_KEY + EMAIL_FROM are set
+ *      (plain POST {EMAIL_API_BASE}/emails with a Bearer token)
+ *   3. Neither → honest "not configured": isEmailConfigured() is false and
+ *      sendEmail() throws EmailNotConfiguredError. Callers decide the
+ *      fallback — nothing here pretends a message was sent. A provider
+ *      rejection (non-2xx) or network failure throws EmailSendError carrying
+ *      the provider's own message, never a synthesized success.
+ *
+ * No SDK dependency for either path, mirroring how sms.ts talks to Twilio
+ * with bare fetch. nodemailer is intentionally NOT added: it is not in
  * package.json, and the repo rule is no new heavy deps for an env-gated
  * pre-wire. Swapping providers later means changing one function here.
  *
  * Reads configuration from the environment ONCE per call (never hard-coded,
  * never cached at module scope so test runs and dev servers pick changes up):
  *
- *   EMAIL_API_KEY    provider API key (Bearer)
+ *   EMAIL_API_KEY    fallback provider API key (Bearer)
  *   EMAIL_FROM       "Name <addr>" or bare address (e.g. "MissedCall AI <notifications@missedcall.ai>")
  *   EMAIL_API_BASE   optional; default https://api.resend.com
  *   EMAIL_PROVIDER   optional display name for the init log line only
- *
- * HONESTY RULE: if EMAIL_API_KEY or EMAIL_FROM is missing, isEmailConfigured()
- * is false and sendEmail() throws EmailNotConfiguredError. Callers decide the
- * fallback — nothing here pretends a message was sent. A provider rejection
- * (non-2xx) or network failure throws EmailSendError carrying the provider's
- * own message, never a synthesized success.
  */
 import "@tanstack/react-start/server-only";
+import {
+  isKnockConfigured,
+  readKnockConfig,
+  triggerKnockEmail,
+} from "~/lib/server/knock";
 
 const DEFAULT_EMAIL_API_BASE = "https://api.resend.com";
 
@@ -47,19 +55,40 @@ export function readEmailConfig(): EmailConfig | null {
   };
 }
 
-/** True only when every required credential is present. */
-export function isEmailConfigured(): boolean {
-  return readEmailConfig() !== null;
+/** Which outbound email transport is in effect right now (env-driven). */
+export type EmailTransport = "knock" | "resend-style";
+
+/**
+ * Knock is PRIMARY when KNOCK_API_KEY is present; the Resend-style path is the
+ * fallback when only EMAIL_* is set; null means email is honestly not wired.
+ */
+export function activeEmailTransport(): EmailTransport | null {
+  if (isKnockConfigured()) return "knock";
+  if (readEmailConfig() !== null) return "resend-style";
+  return null;
 }
 
-/** One honest init line — says which state, never claims a provider exists. */
+/** True only when every required credential of SOME transport is present. */
+export function isEmailConfigured(): boolean {
+  return activeEmailTransport() !== null;
+}
+
+/** One honest init line — says which state and WHICH transport, never claims a provider exists. */
 export function logEmailStatus(): void {
-  if (isEmailConfigured()) {
+  const transport = activeEmailTransport();
+  if (transport === "knock") {
+    const knock = readKnockConfig();
+    console.log(
+      "[email] knock configured - outbound email enabled (workflow: " +
+        (knock ? knock.workflowKey : "?") +
+        "; primary transport, Resend-style fallback dormant)",
+    );
+  } else if (transport === "resend-style") {
     const config = readEmailConfig();
     console.log("[email] " + config!.provider + " configured - outbound email enabled");
   } else {
     console.log(
-      "[email] not configured (EMAIL_API_KEY / EMAIL_FROM missing) - email delivery disabled, sends will fail fast",
+      "[email] not configured (KNOCK_API_KEY / EMAIL_API_KEY / EMAIL_FROM missing) - email delivery disabled, sends will fail fast",
     );
   }
 }
@@ -67,7 +96,7 @@ export function logEmailStatus(): void {
 /** Typed error so callers can distinguish "not wired" from "provider failed". */
 export class EmailNotConfiguredError extends Error {
   constructor() {
-    super("Email is not configured: set EMAIL_API_KEY and EMAIL_FROM.");
+    super("Email is not configured: set KNOCK_API_KEY (primary) or EMAIL_API_KEY + EMAIL_FROM (fallback).");
     this.name = "EmailNotConfiguredError";
   }
 }
@@ -125,11 +154,36 @@ function rateGate(to: string): void {
 }
 
 /**
- * Send one email via POST {EMAIL_API_BASE}/emails. Throws
- * EmailNotConfiguredError when credentials are absent; EmailSendError when the
- * provider rejects the send (4xx/5xx, malformed response, network error).
+ * Send one email through whichever transport is active (Knock primary,
+ * Resend-style fallback). Throws EmailNotConfiguredError when no transport is
+ * configured; EmailSendError when the active provider rejects the send
+ * (4xx/5xx, malformed response, network error).
  */
 export async function sendEmail(args: SendEmailArgs): Promise<SendEmailResult> {
+  const transport = activeEmailTransport();
+  if (transport === "knock") {
+    const knock = readKnockConfig();
+    if (!knock) throw new EmailNotConfiguredError();
+    rateGate(args.to);
+    const result = await triggerKnockEmail({
+      to: args.to,
+      subject: args.subject,
+      body: args.text,
+      ...(args.html !== undefined ? { html: args.html } : {}),
+    });
+    // Knock renders "from" inside the dashboard workflow's email channel —
+    // the caller-facing from reflects that honestly instead of inventing one.
+    return { id: result.id, status: "triggered", to: result.to, from: "knock:" + result.workflowKey };
+  }
+  return sendViaResendStyle(args);
+}
+
+/**
+ * Fallback transport: POST {EMAIL_API_BASE}/emails (Resend-style).
+ * Throws EmailNotConfiguredError when EMAIL_* credentials are absent;
+ * EmailSendError when the provider rejects the send.
+ */
+async function sendViaResendStyle(args: SendEmailArgs): Promise<SendEmailResult> {
   const config = readEmailConfig();
   if (!config) throw new EmailNotConfiguredError();
   rateGate(args.to);

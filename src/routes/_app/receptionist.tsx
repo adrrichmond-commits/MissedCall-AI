@@ -155,7 +155,7 @@ function ReceptionistStudioPage() {
             </Button>
           </div>
         ) : null}
-        <TestCallSection draft={draft} businessName={view.businessName} smsProviderConfigured={view.smsProviderConfigured} />
+        <TestCallSection draft={draft} businessName={view.businessName} smsProviderConfigured={view.smsProviderConfigured} llmConfigured={view.llmConfigured} />
       </div>
     </div>
   );
@@ -495,10 +495,12 @@ function TestCallSection({
   draft,
   businessName,
   smsProviderConfigured,
+  llmConfigured,
 }: {
   draft: ReceptionistConfig;
   businessName: string;
   smsProviderConfigured: boolean;
+  llmConfigured: boolean;
 }) {
   const [lines, setLines] = useState<SimLine[]>([]);
   const [state, setState] = useState<SimState | null>(null);
@@ -575,6 +577,8 @@ function TestCallSection({
           {smsProviderConfigured
             ? "Your SMS provider is configured, but real customer messaging is gated on A2P campaign approval. This preview never places a call or sends a message."
             : "Your SMS provider is not connected yet. This preview never places a call or sends a message."}
+          {!llmConfigured &&
+            " AI language understanding is not configured — this preview runs on the rules tier only."}
         </p>
       </div>
 

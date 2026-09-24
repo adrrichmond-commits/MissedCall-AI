@@ -100,6 +100,13 @@ function uninstallFetch(): void {
 }
 
 // --- Config gating (forced-clean env) -----------------------------------------
+// This suite tests the RESEND-STYLE FALLBACK transport in isolation, so the
+// KNOCK_* vars (which take precedence over EMAIL_* when set — e.g. in this
+// machine's shell where the owner's real Knock key lives) are pinned off for
+// the whole run. Knock's own transport has scripts/test-knock.ts.
+delete process.env.KNOCK_API_KEY;
+delete process.env.KNOCK_WORKFLOW_KEY;
+delete process.env.KNOCK_API_BASE;
 delete process.env.EMAIL_API_KEY;
 delete process.env.EMAIL_FROM;
 delete process.env.EMAIL_API_BASE;
