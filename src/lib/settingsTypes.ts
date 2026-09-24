@@ -154,5 +154,12 @@ export interface SettingsView {
   emergencyPrefs: EmergencyPrefs;
   /** True once the owner saved emergency prefs at least once (emergencyPrefsSavedAt). */
   emergencyPrefsSaved: boolean;
+  /**
+   * P4-O: the EXACT greeting a caller hears today — the studio-configured one
+   * verbatim when set, the default (built from the receptionist name) when
+   * not. Computed server-side with resolveReceptionistGreeting so onboarding
+   * step 4 can never drift from the live voice path.
+   */
+  receptionistGreeting: string;
   onboarding: OnboardingState;
 }
