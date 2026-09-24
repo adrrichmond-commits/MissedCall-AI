@@ -17,6 +17,13 @@ import { Badge } from "~/components/ui/Badge";
 
 export const Route = createFileRoute("/admin/accounts_/$businessId")({
   loader: async ({ params }) => {
+    // PR #27: plain read during SSR (no HTTP self-call); RPC in the browser.
+    if (import.meta.env.SSR) {
+      const { adminAccountDetailPage } = await import("~/lib/server/adminReads");
+      const res = await adminAccountDetailPage(params.businessId);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    }
     const res = await adminAccountDetailFn({ data: { businessId: params.businessId } });
     if (!res.ok) throw new Error(res.error);
     return res.data;

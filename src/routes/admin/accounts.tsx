@@ -21,8 +21,15 @@ export const Route = createFileRoute("/admin/accounts")({
     q: typeof search.q === "string" ? search.q.slice(0, 120) : undefined,
     page: search.page != null ? Number(search.page) || 1 : undefined,
   }),
-  loaderDeps: ({ search }) => [search.q, search.page],
+  loaderDeps: ({ search }): [string | undefined, number | undefined] => [search.q, search.page],
   loader: async ({ deps }) => {
+    // PR #27: plain read during SSR (no HTTP self-call); RPC in the browser.
+    if (import.meta.env.SSR) {
+      const { adminAccountsPage } = await import("~/lib/server/adminReads");
+      const res = await adminAccountsPage({ search: deps[0] ?? "", page: deps[1] ?? 1 });
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    }
     const { adminListAccountsFn } = await import("~/lib/server/adminFns");
     const res = await adminListAccountsFn({
       data: { search: deps[0] ?? "", page: deps[1] ?? 1 },
