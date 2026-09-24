@@ -124,7 +124,7 @@ const BUSINESS_HOURS = [
 
 interface LeadFixture {
   source: "missed_call" | "web_form" | "referral" | "repeat_customer";
-  status: "new" | "contacted" | "booked" | "completed" | "lost";
+  status: "new" | "contacted" | "qualified" | "follow_up_needed" | "appointment_scheduled" | "won" | "lost";
   /** Phase 2 triage ranking: emergency = drop everything, high = today, normal = scheduled. */
   priority: "emergency" | "high" | "normal";
   serviceNeed: string;
@@ -298,7 +298,7 @@ const LEADS: LeadFixture[] = [
 
   // ---- ex-converted (5) -> booked (3) / completed (2 — completed appt) ------
   {
-    source: "missed_call", status: "booked", serviceNeed: "Water Heater Replacement", urgency: "emergency",
+    source: "missed_call", status: "appointment_scheduled", serviceNeed: "Water Heater Replacement", urgency: "emergency",
     priority: "emergency",
     contactName: "Frank Delgado", contactPhone: "(512) 555-0111", contactEmail: "fdelgado@example.com",
     contactAddress: "2204 Burton Dr, Austin, TX 78704",
@@ -306,7 +306,7 @@ const LEADS: LeadFixture[] = [
     estimatedValueCents: 215000, notes: "Paid by check on completion.", createdOffsetDays: 21, convertedAfterDays: 1,
   },
   {
-    source: "repeat_customer", status: "completed", serviceNeed: "Sump Pump Replacement", urgency: "same_day",
+    source: "repeat_customer", status: "won", serviceNeed: "Sump Pump Replacement", urgency: "same_day",
     priority: "high",
     contactName: "Nadia Petrov", contactPhone: "(512) 555-0168", contactEmail: "nadia.p@example.com",
     contactAddress: "7412 Rain Creek Pkwy, Austin, TX 78759",
@@ -314,7 +314,7 @@ const LEADS: LeadFixture[] = [
     estimatedValueCents: 148000, notes: null, createdOffsetDays: 18, convertedAfterDays: 0,
   },
   {
-    source: "web_form", status: "completed", serviceNeed: "Main Water Line Replacement", urgency: "within_week",
+    source: "web_form", status: "won", serviceNeed: "Main Water Line Replacement", urgency: "within_week",
     priority: "normal",
     contactName: "Owen Mbeki", contactPhone: "(512) 555-0139", contactEmail: "owen.mbeki@example.com",
     contactAddress: "3909 Shoal Creek Blvd, Austin, TX 78756",
@@ -322,7 +322,7 @@ const LEADS: LeadFixture[] = [
     estimatedValueCents: 380000, notes: "Insurance covered part — invoiced remainder to owner.", createdOffsetDays: 26, convertedAfterDays: 3,
   },
   {
-    source: "referral", status: "booked", serviceNeed: "Drain Cleaning", urgency: "same_day",
+    source: "referral", status: "appointment_scheduled", serviceNeed: "Drain Cleaning", urgency: "same_day",
     priority: "high",
     contactName: "Jun Watanabe", contactPhone: "(512) 555-0193", contactEmail: null,
     contactAddress: "1605 E 6th St, Austin, TX 78702",
@@ -330,7 +330,7 @@ const LEADS: LeadFixture[] = [
     estimatedValueCents: 27500, notes: null, createdOffsetDays: 15, convertedAfterDays: 0,
   },
   {
-    source: "missed_call", status: "booked", serviceNeed: "Fixture Repair & Replacement", urgency: "flexible",
+    source: "missed_call", status: "appointment_scheduled", serviceNeed: "Fixture Repair & Replacement", urgency: "flexible",
     priority: "normal",
     contactName: "Colleen O'Shea", contactPhone: "(512) 555-0126", contactEmail: "coshea@example.com",
     contactAddress: "2903 Miriam Ave, Austin, TX 78745",
