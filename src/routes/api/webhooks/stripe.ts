@@ -26,6 +26,8 @@
  * there is no createAPIFileRoute export in 1.158).
  */
 import { createFileRoute } from "@tanstack/react-router";
+import { checkRateLimit, clientIpFromHeaders } from "~/lib/server/rateLimit";
+import { guardApiRoute } from "~/lib/server/errorSink";
 import {
   STRIPE_SIGNATURE_HEADER,
   isStripeConfigured,
@@ -98,6 +100,15 @@ const neonStore: StripeEventStore = {
 };
 
 async function handlePost(request: Request): Promise<Response> {
+  // 0. P4-I per-IP rate limit (generous: Stripe retries/bursts fit). A 429
+  //    with Retry-After sends Stripe back on its own retry schedule.
+  const rl = checkRateLimit("stripe_webhook", clientIpFromHeaders(request.headers));
+  if (!rl.allowed) {
+    return Response.json(
+      { error: "rate_limited", message: "Too many webhook requests from this source. Retry after " + rl.retryAfterSec + "s." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } },
+    );
+  }
   // 1. Honest gate: without Stripe credentials this endpoint cannot verify or
   //    process anything — 503, never a silent accept. (Shape mirrors the
   //    Twilio webhook's 503 exactly.)
@@ -173,7 +184,9 @@ export const Route = createFileRoute("/api/webhooks/stripe")({
   server: {
     handlers: {
       // Handler receives the route-method ctx ({ request, params, ... }).
-      POST: ({ request }: { request: Request }) => handlePost(request),
+      // P4-I: unexpected throws are recorded in system_errors and answered
+      // as a clean 500 (handled 403/503 contracts above are unchanged).
+      POST: ({ request }: { request: Request }) => guardApiRoute("api_route:stripe", handlePost)(request),
       // Honest method routing: anything else is 405, never a silent 200.
       GET: () =>
         jsonError(405, "method_not_allowed", "Use POST — Stripe delivers events via POST."),

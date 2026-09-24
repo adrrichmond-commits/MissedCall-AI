@@ -43,6 +43,8 @@ import {
   listRecentNotificationsForAdmin,
   listRecentStripeEvents,
 } from "~/db/queries/admin";
+// P4-I: in-app error sink reads (platform-admin health view only).
+import { countRecentSystemErrors, listRecentSystemErrors } from "~/db/queries/systemErrors";
 import { getUsageForPeriod } from "~/db/queries/usage";
 import { currentPeriodStart } from "./usage";
 import { limitsForPlan } from "~/lib/pricing";
@@ -381,16 +383,30 @@ export interface AdminHealthView {
   stripeUnprocessedCount: number;
   integrations: IntegrationStatus[];
   totals: { businesses: number; users: number };
+  /** P4-I: recent rows from the in-app error sink (system_errors). */
+  systemErrors: {
+    id: string;
+    source: string;
+    severity: string;
+    message: string;
+    businessId: string | null;
+    createdAt: string;
+  }[];
+  /** P4-I: system_errors rows in the trailing hour (readiness signal). */
+  systemErrorCount1h: number;
 }
 
 /** The system-health payload: funnel aggregate + webhooks + env status. */
 export async function adminHealthPage(): Promise<AdminResult<AdminHealthView>> {
   try {
     await requirePlatformAdmin();
-    const [funnel, notificationsByType, stripeEvents] = await Promise.all([
+    const [funnel, notificationsByType, stripeEvents, systemErrors, systemErrorCount1h] = await Promise.all([
       adminAggregateFunnelCounts(),
       adminNotificationTypeCounts(),
       listRecentStripeEvents(20),
+      // P4-I: the in-app error sink — recent rows + trailing-hour count.
+      listRecentSystemErrors(10).catch(() => []),
+      countRecentSystemErrors(60).catch(() => 0),
     ]);
     const db = (await import("~/db/queries/shared")).sql();
     const totalsRows = await db`
@@ -421,6 +437,16 @@ export async function adminHealthPage(): Promise<AdminResult<AdminHealthView>> {
         stripeUnprocessedCount: stripeEvents.filter((e) => e.processedAt == null).length,
         integrations: integrationStatuses(),
         totals: { businesses: Number(t.businesses ?? 0), users: Number(t.users ?? 0) },
+        systemErrors: systemErrors.map((e) => ({
+          id: e.id,
+          source: e.source,
+          severity: e.severity,
+          message: e.message,
+          businessId: e.businessId,
+          // Coerce Date → string: React refuses to render Date objects.
+          createdAt: e.createdAt instanceof Date ? e.createdAt.toISOString() : String(e.createdAt),
+        })),
+        systemErrorCount1h,
       },
     };
   } catch (e) {

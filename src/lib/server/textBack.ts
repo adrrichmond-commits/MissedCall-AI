@@ -32,6 +32,7 @@ import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { isLlmConfigured, llmComplete, readLlmConfig } from "./llm";
 import { isSmsConfigured, sendSms } from "./sms";
+import { captureSystemError } from "./errorSink";
 import { gateAction, loadPlanUsageContext, meterAction } from "./usageGate";
 import { anchorForBusiness } from "./usageGate";
 import type { GateDecision } from "./usage";
@@ -181,6 +182,14 @@ export async function sendTextBack(
     // No usage is metered for a failed send.
     const reason = err instanceof Error ? err.message : String(err);
     console.log("[textback] send failed for lead " + lead.id + ": " + reason);
+    // P4-I: a final delivery failure is RECORDED (system_errors + log), never
+    // silently swallowed — the failure is visible on /admin/health.
+    captureSystemError({
+      source: "sms_delivery",
+      businessId,
+      message: "Text-back delivery failed for lead " + lead.id + ": " + reason,
+      detail: { leadId: lead.id, phone, flow: "text_back", outcome: "failed" },
+    });
     return textBackResult("failed", reason);
   }
 }
@@ -465,7 +474,16 @@ async function tryPipelineReply(
       await meterAction({ businessId: args.businessId, ctx, axis: "sms_per_month" });
     }
   } catch (err) {
-    console.log("[textback] auto-reply failed: " + String(err));
+    const reason = err instanceof Error ? err.message : String(err);
+    console.log("[textback] auto-reply failed: " + reason);
+    // P4-I: record the failed delivery; the stored inbound message and any
+    // classification survive (this fires after they are persisted).
+    captureSystemError({
+      source: "sms_delivery",
+      businessId: args.businessId,
+      message: "Auto-reply delivery failed for conversation " + args.conversationId + ": " + reason,
+      detail: { conversationId: args.conversationId, phone: args.from, flow: "auto_reply" },
+    });
   }
   return null;
 }
@@ -481,7 +499,16 @@ async function tryReplyCommand(
   try {
     await sendSms({ to: args.from, body: renderSmsTemplate(template, args.businessName) });
   } catch (err) {
-    console.log("[textback] command reply failed: " + String(err));
+    const reason = err instanceof Error ? err.message : String(err);
+    console.log("[textback] command reply failed: " + reason);
+    // P4-I: STOP/START/HELP confirmations are compliance-relevant; a failed
+    // one is recorded (the opt-out itself is already safely persisted).
+    captureSystemError({
+      source: "sms_delivery",
+      businessId: args.businessId,
+      message: "Command reply delivery failed for conversation " + args.conversationId + ": " + reason,
+      detail: { conversationId: args.conversationId, phone: args.from, flow: "command_reply" },
+    });
   }
 }
 

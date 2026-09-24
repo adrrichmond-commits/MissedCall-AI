@@ -657,3 +657,18 @@ export interface Call {
   createdAt: Date;
   updatedAt: Date;
 }
+// ---------------------------------------------------------------------------
+// P4-I: system_errors (migration 016) — in-app error sink rows.
+// ---------------------------------------------------------------------------
+export type SystemErrorSeverity = "error" | "warning";
+export interface SystemError {
+  id: string;
+  /** NULL = platform-level error with no single owning business. */
+  businessId: string | null;
+  source: string;
+  severity: SystemErrorSeverity;
+  message: string;
+  detail: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}

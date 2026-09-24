@@ -7,7 +7,10 @@
  * UI states that delivery is pending provider setup.
  */
 import { createServerFn } from "@tanstack/react-start";
+import { getRequestHeaders } from "@tanstack/react-start/server";
 import type { UserRole } from "~/db/schema";
+import { checkRateLimit, clientIpFromHeaders, rateLimitingDisabled, type RateLimitBucket } from "./rateLimit";
+import { captureSystemError } from "./errorSink";
 import * as q from "~/db/queries/auth";
 import { AuthError, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS } from "~/lib/server/auth";
 import {
@@ -53,7 +56,39 @@ function assertStrongPassword(raw: unknown): string {
 function toClientError(e: unknown): { ok: false; error: string } {
   if (e instanceof AuthError) return { ok: false, error: e.message };
   console.error("[auth] unexpected error:", e);
+  // P4-I: unexpected (non-AuthError) failures are recorded in system_errors
+  // so the platform owner sees them on /admin/health. Fire-and-forget — the
+  // client still gets the same generic safe message.
+  captureSystemError({
+    source: "auth",
+    message: "Unexpected auth error: " + (e instanceof Error ? e.message : String(e)),
+    detail: { fn: "authFns" },
+  });
   return { ok: false, error: "Something went wrong. Please try again." };
+}
+/**
+ * P4-I per-IP rate limit on unauthenticated auth entry points (login /
+ * signup / password reset). Identity is the proxy-forwarded client IP.
+ * Limits are generous (see src/lib/server/rateLimit.ts) — normal humans and
+ * the smoke suite never trip them; credential stuffing does. A tripped
+ * limit throws a typed AuthError carrying an honest retry message.
+ */
+function enforceAuthRateLimit(bucket: RateLimitBucket): void {
+  if (rateLimitingDisabled()) return;
+  let identity = "no-request-context";
+  try {
+    const headers = getRequestHeaders();
+    if (headers) identity = clientIpFromHeaders(headers);
+  } catch {
+    // No request context (scripts/tests) — one shared bucket, still bounded.
+  }
+  const decision = checkRateLimit(bucket, identity);
+  if (!decision.allowed) {
+    throw new AuthError(
+      "bad_request",
+      "Too many attempts from this network. Please try again in " + decision.retryAfterSec + " seconds.",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +103,7 @@ export const signupFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { businessName: string; fullName: string; email: string; password: string })
   .handler(async ({ data }): Promise<SignupResult> => {
   try {
+    enforceAuthRateLimit("auth_signup");
     const businessName = requiredString(data?.businessName, "Business name", 1, 120);
     const fullName = requiredString(data?.fullName, "Name", 1, 120);
     const email = normalizeEmail(data?.email);
@@ -108,6 +144,7 @@ export const loginFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { email: string; password: string })
   .handler(async ({ data }): Promise<LoginResult> => {
   try {
+    enforceAuthRateLimit("auth_login");
     const email = normalizeEmail(data?.email);
     const password = typeof data?.password === "string" ? data.password : "";
 
@@ -151,6 +188,7 @@ export const forgotPasswordFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { email: string })
   .handler(async ({ data }): Promise<{ ok: boolean; error?: string }> => {
   try {
+    enforceAuthRateLimit("auth_password_reset");
     const email = normalizeEmail(data?.email);
     const user = await q.findUserByEmail(email);
     if (user) {
