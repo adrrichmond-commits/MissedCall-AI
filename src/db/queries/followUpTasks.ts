@@ -64,10 +64,13 @@ export async function listFollowUpTasks(
   const { limit, offset, order } = listClause(opts);
   const dir = order === "asc" ? "ASC" : "DESC";
   const values: unknown[] = [businessId];
-  const clauses = ["business_id = $1"];
+  // Qualified with the t. alias: this list joins leads, and both tables have
+  // business_id — an unqualified reference is ambiguous (42702) and 500s the
+  // dashboard. Same for the `done` filter.
+  const clauses = ["t.business_id = $1"];
   if (filters.done != null) {
     values.push(filters.done);
-    clauses.push(`done = $${values.length}`);
+    clauses.push(`t.done = $${values.length}`);
   }
   const rows = await db.query(
     `SELECT t.*, l.contact_name AS lead_name, l.contact_phone AS lead_phone,
