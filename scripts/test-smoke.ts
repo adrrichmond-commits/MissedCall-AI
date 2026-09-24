@@ -191,3 +191,5 @@ checkTrue("demo: leads page renders seeded CRM", demoLeads.status === 200 && new
 
 console.log(`\nSMOKE ${failures === 0 ? "PASS" : "FAIL"} — ${checks} checks, ${failures} failures`);
 process.exit(failures === 0 ? 0 : 1);
+
+export {};
