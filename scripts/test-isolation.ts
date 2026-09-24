@@ -109,6 +109,9 @@ async function main(): Promise<void> {
     // ------------------------------------------------------------------
     const sessA = await getSessionByTokenHash(await sha256Hex(A.token));
     const sessB = await getSessionByTokenHash(await sha256Hex(B.token));
+    if (sessA == null || sessB == null) {
+      throw new Error("isolation test: seeded owner session lookup returned null");
+    }
     checkTrue("A session resolves to A's business", sessA.userData.businessId === a);
     checkTrue("B session resolves to B's business", sessB.userData.businessId === b);
     checkTrue("A session never resolves into B's business", sessA.userData.businessId !== b);
