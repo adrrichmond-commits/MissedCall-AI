@@ -96,7 +96,7 @@ export interface OnboardingStepStatus {
 
 export interface OnboardingState {
   steps: OnboardingStepStatus[];
-  /** 0–100 rounded progress across the 9 steps. */
+  /** 0–100 rounded progress across the 5 self-serve steps (P4-O). */
   percent: number;
   /** Index of the first unfinished step (0-based), or 8 when everything is done. */
   resumeStep: number;

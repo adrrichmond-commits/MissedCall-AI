@@ -16,33 +16,44 @@ import { PageHeader, PageLoading, ErrorState } from "~/components/app/pageStates
 import { Field, TextInput } from "~/components/ui/Form";
 import { Button } from "~/components/ui/Button";
 import { COMMON_TIMEZONES, US_STATES, type SettingsView } from "~/lib/settingsTypes";
+import { SMS_TEMPLATES, renderSmsTemplate } from "~/lib/smsTemplates";
+import { DEFAULT_GREETING } from "~/lib/voice/twiml";
 
 /** Shared styling for raw <select> elements (matches settings.tsx inputCls). */
 const inputCls =
   "w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-50 disabled:text-slate-400";
 
-const TOTAL_STEPS = 9;
+const TOTAL_STEPS = 5;
 
 /**
- * Wizard labels (owner brief #12, 9 steps: account -> company info -> services
- * -> hours -> emergency prefs -> notifications -> phone number -> test AI ->
- * activate). Step 1 "Account" is complete at signup (the session IS the
- * account) and has no server-derived done-flag; DERIVED_LABELS below mirror
- * the 8 derived steps in settingsFns ONBOARDING_STEPS so the nudge's 0-based
- * resumeStep can be mapped to a wizard step.
+ * P4-O streamlined wizard (owner requirement area 2): the Phase 2 nine-step
+ * wizard collapsed into five screens a plumber can finish in 5–10 minutes.
+ * Nothing was deleted — every old step still exists, merged or deferred:
+ *
+ *   1. Your business          <- old "Company info" (website + address line 2
+ *                              deferred to Settings; passed through untouched)
+ *   2. Services & area        <- old step, unchanged ("what you do + where")
+ *   3. Hours & emergencies    <- old "Business hours" + "Emergency prefs" merged
+ *   4. How missed calls ...   <- old "Notifications" + the honest "Phone
+ *                              number" / "Test the AI" placeholders folded in
+ *                              as status notes, plus a real sample of the
+ *                              text-back message and receptionist greeting
+ *   5. You're live            <- old "Review & activate", now ending on a
+ *                              dashboard "you're live" welcome state
+ *
+ * The old informational "Account" step is gone as a screen (the session IS the
+ * account); the trial note moved to step 5. The server-derived done-flags in
+ * settingsFns are unchanged — this file maps them onto the five screens.
  */
 const STEP_LABELS = [
-  "Account",
-  "Company info",
+  "Your business",
   "Services & area",
-  "Business hours",
-  "Emergency prefs",
-  "Notifications",
-  "Phone number",
-  "Test the AI",
-  "Review & activate",
+  "Hours & emergencies",
+  "How missed calls become jobs",
+  "You're live",
 ] as const;
 
+/** The 8 server-derived steps (settingsFns ONBOARDING_STEPS), for resume/finish hints. */
 const DERIVED_LABELS = [
   "Company info",
   "Services & area",
@@ -53,6 +64,19 @@ const DERIVED_LABELS = [
   "Test the AI",
   "Review & activate",
 ] as const;
+
+/**
+ * Map the nudge's 0-based resumeStep (index into the 8 derived steps) onto a
+ * wizard screen. derived: 0 company→1 · 1 services→2 · 2 hours,3 emergency→3 ·
+ * 4 notifications→4 · 5 phone,6 testAi,7 review→5 (finish screen).
+ */
+function resumeTargetStep(resumeStep: number): number {
+  if (resumeStep <= 0) return 1;
+  if (resumeStep === 1) return 2;
+  if (resumeStep === 2 || resumeStep === 3) return 3;
+  if (resumeStep === 4) return 4;
+  return 5;
+}
 
 /** dayOfWeek -> label, Monday-first (matches DB 0=Mon..6=Sun convention). */
 const DAY_LABELS: Record<number, string> = {
@@ -68,7 +92,7 @@ const DAY_LABELS: Record<number, string> = {
 /** DB row order for the 7-day week, Monday-first. */
 const BUSINESS_DAYS = [0, 1, 2, 3, 4, 5, 6] as const;
 
-/** The four notification switches offered in onboarding (settings.tsx uses the same keys). */
+/** The four notification switches (settings.tsx uses the same keys). */
 const NOTIFICATION_PREF_KEYS = [
   { key: "onMissedCallSms", label: "Text me when a missed call is captured" },
   { key: "onNewLeadEmail", label: "Email me when a new lead comes in" },
@@ -76,9 +100,9 @@ const NOTIFICATION_PREF_KEYS = [
   { key: "weeklySummaryEmail", label: "Send a weekly summary email" },
 ] as const;
 
-/** Honest note: prefs save now, delivery waits for the Phase 2 messaging provider. */
+/** Honest note: prefs save now, delivery waits for the messaging provider. */
 const PREFS_DELIVERY_NOTE =
-  "Your choices are saved now. Email/SMS delivery switches on when the messaging provider is connected (Phase 2) - nothing is sent until then.";
+  "Your choices are saved now. Email/SMS delivery switches on when the messaging provider is connected — nothing is sent until then.";
 
 const TIME_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
 
@@ -141,14 +165,14 @@ function OnboardingPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [skip, setSkip] = useState<SaveState>({ kind: "idle" });
-  // Resume: jump to the first incomplete step once the nudge data arrives.
-  // resumeStep is the 0-based index into the 8 server-derived steps; wizard
-  // step = derived index + 2 (step 1 "Account" has no derived done-flag).
+  // Resume: jump to the first incomplete screen once the nudge data arrives.
+  // resumeStep is the 0-based index into the 8 server-derived steps; the
+  // helper above maps it onto the five screens.
   useEffect(() => {
     let alive = true;
     getOnboardingNudgeFn()
       .then((n) => {
-        if (alive && n && n.resumeStep >= 0 && n.resumeStep <= 7) setStep(n.resumeStep + 2);
+        if (alive && n && n.resumeStep >= 0 && n.resumeStep <= 7) setStep(resumeTargetStep(n.resumeStep));
       })
       .catch(() => {});
     return () => {
@@ -172,10 +196,10 @@ function OnboardingPage() {
     <div className="mx-auto max-w-2xl">
       <PageHeader
         title="Set up MissedCall AI"
-        description="Nine quick steps so missed calls become booked jobs."
+        description="Five short steps — about 5–10 minutes — and missed calls start becoming booked jobs."
       />
 
-      {/* Progress: "Step X of 9" + percent bar */}
+      {/* Progress: "Step X of 5" + percent bar */}
       <div className="mb-6">
         <div className="flex items-center justify-between text-sm">
           <p className="font-medium text-slate-700">
@@ -205,15 +229,11 @@ function OnboardingPage() {
         </ol>
       </div>
 
-      {step === 1 ? <AccountStep view={data} onDone={() => setStep(2)} /> : null}
-      {step === 2 ? <CompanyInfoStep view={data} onDone={() => setStep(3)} /> : null}
-      {step === 3 ? <ServicesStep view={data} onBack={() => setStep(2)} onDone={() => setStep(4)} /> : null}
-      {step === 4 ? <HoursStep view={data} onBack={() => setStep(3)} onDone={() => setStep(5)} /> : null}
-      {step === 5 ? <EmergencyStep view={data} onBack={() => setStep(4)} onDone={() => setStep(6)} /> : null}
-      {step === 6 ? <PrefsStep view={data} onBack={() => setStep(5)} onDone={() => setStep(7)} /> : null}
-      {step === 7 ? <PhoneStep view={data} onBack={() => setStep(6)} onDone={() => setStep(8)} /> : null}
-      {step === 8 ? <TestAiStep onBack={() => setStep(7)} onDone={() => setStep(9)} /> : null}
-      {step === 9 ? <ReviewStep view={data} onBack={() => setStep(8)} /> : null}
+      {step === 1 ? <BusinessStep view={data} onDone={() => setStep(2)} /> : null}
+      {step === 2 ? <ServicesStep view={data} onBack={() => setStep(1)} onDone={() => setStep(3)} /> : null}
+      {step === 3 ? <HoursEmergStep view={data} onBack={() => setStep(2)} onDone={() => setStep(4)} /> : null}
+      {step === 4 ? <HowItWorksStep view={data} onBack={() => setStep(3)} onDone={() => setStep(5)} /> : null}
+      {step === 5 ? <LiveStep view={data} onBack={() => setStep(4)} /> : null}
 
       <div className="mt-6 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
         <SaveFeedback state={skip} />
@@ -226,17 +246,17 @@ function OnboardingPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: company info (same fields + validation as settings.tsx BusinessInfoSection)
+// Step 1: your business (essentials of the old Company info step; website and
+// address line 2 are deferred to Settings but passed through untouched so a
+// re-save never wipes them)
 // ---------------------------------------------------------------------------
-function CompanyInfoStep({ view, onDone }: { view: SettingsView; onDone: () => void }) {
+function BusinessStep({ view, onDone }: { view: SettingsView; onDone: () => void }) {
   const initial = view.business;
   const canEdit = view.canEdit;
   const [name, setName] = useState(initial.name);
   const [phone, setPhone] = useState(initial.phone ?? "");
   const [email, setEmail] = useState(initial.email ?? "");
-  const [website, setWebsite] = useState(initial.website ?? "");
   const [addressLine1, setAddressLine1] = useState(initial.addressLine1 ?? "");
-  const [addressLine2, setAddressLine2] = useState(initial.addressLine2 ?? "");
   const [city, setCity] = useState(initial.city ?? "");
   const [state, setState] = useState(initial.state ?? "");
   const [postalCode, setPostalCode] = useState(initial.postalCode ?? "");
@@ -264,8 +284,21 @@ function CompanyInfoStep({ view, onDone }: { view: SettingsView; onDone: () => v
     e.preventDefault();
     if (!clientValidate()) return;
     setSave({ kind: "saving" });
+    // website + addressLine2 are not on this screen anymore; pass the stored
+    // values straight through so updateBusinessInfoFn never blanks them.
     const res = await updateBusinessInfoFn({
-      data: { name, phone, email, website, addressLine1, addressLine2, city, state, postalCode, timezone },
+      data: {
+        name,
+        phone,
+        email,
+        website: initial.website ?? "",
+        addressLine1,
+        addressLine2: initial.addressLine2 ?? "",
+        city,
+        state,
+        postalCode,
+        timezone,
+      },
     });
     if (res.ok) {
       setSave({ kind: "saved", message: res.data.message });
@@ -277,9 +310,10 @@ function CompanyInfoStep({ view, onDone }: { view: SettingsView; onDone: () => v
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Company info</h2>
+      <h2 className="text-base font-semibold text-slate-900">Your business</h2>
       <p className="mt-1 text-sm text-slate-600">
-        Shown to customers and used across the app. You can change this anytime in Settings.
+        The essentials — customers see this, and the AI answers in your name. You can add your
+        website and full address later in Settings.
       </p>
       <form onSubmit={onSubmit} className="mt-4 space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
@@ -287,23 +321,16 @@ function CompanyInfoStep({ view, onDone }: { view: SettingsView; onDone: () => v
             <TextInput id="onb-name" value={name} disabled={!canEdit} onChange={setName} required />
             <FieldError msg={errors.name} />
           </Field>
-          <Field label="Phone" htmlFor="onb-phone" hint="Customers see this number.">
-            <TextInput id="onb-phone" value={phone} disabled={!canEdit} onChange={setPhone} />
+          <Field label="Main phone number" htmlFor="onb-phone" hint="The line customers call — missed calls on it get texted back.">
+            <TextInput id="onb-phone" value={phone} disabled={!canEdit} onChange={setPhone} placeholder="(555) 123-4567" />
             <FieldError msg={errors.phone} />
           </Field>
           <Field label="Email" htmlFor="onb-email">
             <TextInput id="onb-email" type="email" value={email} disabled={!canEdit} onChange={setEmail} />
             <FieldError msg={errors.email} />
           </Field>
-          <Field label="Website" htmlFor="onb-website" hint="Your domain — https:// is added for you.">
-            <TextInput id="onb-website" value={website} disabled={!canEdit} onChange={setWebsite} />
-            <FieldError msg={errors.website} />
-          </Field>
-          <Field label="Address line 1" htmlFor="onb-addr1">
+          <Field label="Street address" htmlFor="onb-addr1" hint="Line 2 and website can wait for Settings.">
             <TextInput id="onb-addr1" value={addressLine1} disabled={!canEdit} onChange={setAddressLine1} />
-          </Field>
-          <Field label="Address line 2" htmlFor="onb-addr2">
-            <TextInput id="onb-addr2" value={addressLine2} disabled={!canEdit} onChange={setAddressLine2} />
           </Field>
           <Field label="City" htmlFor="onb-city">
             <TextInput id="onb-city" value={city} disabled={!canEdit} onChange={setCity} />
@@ -357,7 +384,8 @@ function CompanyInfoStep({ view, onDone }: { view: SettingsView; onDone: () => v
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: services checklist from service_defaults
+// Step 2: services checklist from service_defaults + where you work (unchanged
+// from the previous wizard — "what you do + where you do it")
 // ---------------------------------------------------------------------------
 function ServicesStep({
   view,
@@ -423,8 +451,8 @@ function ServicesStep({
           ))}
         </ul>
       </fieldset>
-      {/* Brief #8/#9: service areas fold into the services step — "what you do
-         + where you do it". Areas save immediately as they are added. */}
+      {/* Areas stay folded into the services step — "what you do + where you do
+         it". Areas save immediately as they are added. */}
       <div className="mt-6 border-t border-slate-100 pt-5">
         <h3 className="text-sm font-semibold text-slate-900">Where you work</h3>
         <p className="mt-1 text-sm text-slate-600">
@@ -448,146 +476,7 @@ function ServicesStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: business hours (7-day rows, mirrors settings.tsx HoursSection shape)
-// ---------------------------------------------------------------------------
-function HoursStep({
-  view,
-  onBack,
-  onDone,
-}: {
-  view: SettingsView;
-  onBack: () => void;
-  onDone: () => void;
-}) {
-  const canEdit = view.canEdit;
-
-  const initial = (): Record<number, DayHours> => {
-    const out: Record<number, DayHours> = {};
-    for (const d of BUSINESS_DAYS) {
-      const row = view.hours.find((h) => h.dayOfWeek === d);
-      out[d] = {
-        isOpen: row?.isOpen ?? false,
-        opensAt: row?.opensAt ?? "08:00",
-        closesAt: row?.closesAt ?? "17:00",
-      };
-    }
-    return out;
-  };
-
-  const [days, setDays] = useState<Record<number, DayHours>>(initial);
-  const [errors, setErrors] = useState<Record<number, string>>({});
-  const [save, setSave] = useState<SaveState>({ kind: "idle" });
-
-  const setDay = (d: number, patch: Partial<DayHours>) => {
-    setDays((prev) => ({ ...prev, [d]: { ...prev[d], ...patch } }));
-  };
-
-  const clientValidate = (): boolean => {
-    const errs: Record<number, string> = {};
-    for (const d of BUSINESS_DAYS) {
-      const row = days[d];
-      if (!row.isOpen) continue;
-      if (!TIME_RE.test(row.opensAt) || !TIME_RE.test(row.closesAt)) {
-        errs[d] = "Open days need both times in HH:MM (24-hour) format.";
-      } else if (row.opensAt >= row.closesAt) {
-        errs[d] = "Opening time must be earlier than closing time.";
-      }
-    }
-    setErrors(errs);
-    return Object.keys(errs).length === 0;
-  };
-
-  const onContinue = async () => {
-    if (!clientValidate()) return;
-    setSave({ kind: "saving" });
-    const res = await saveBusinessHoursFn({
-      data: {
-        days: BUSINESS_DAYS.map((d) => ({
-          dayOfWeek: d,
-          isOpen: days[d].isOpen,
-          opensAt: days[d].opensAt,
-          closesAt: days[d].closesAt,
-        })),
-      },
-    });
-    if (res.ok) {
-      setSave({ kind: "saved", message: res.data.message });
-      onDone();
-    } else {
-      setSave({ kind: "error", message: res.error });
-    }
-  };
-
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Business hours</h2>
-      <p className="mt-1 text-sm text-slate-600">
-        When customers can reach you. Unchecked days are closed. You can change this anytime in Settings.
-      </p>
-      <fieldset disabled={!canEdit} className="mt-4">
-        <legend className="sr-only">Business hours</legend>
-        <ul className="space-y-2">
-          {BUSINESS_DAYS.map((d) => (
-            <li key={d} className="rounded-xl border border-slate-200 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex min-w-[10rem] flex-1 cursor-pointer items-center gap-3">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
-                    checked={days[d].isOpen}
-                    onChange={(e) => setDay(d, { isOpen: e.target.checked })}
-                  />
-                  <span className="text-sm font-medium text-slate-900">{DAY_LABELS[d]}</span>
-                </label>
-                {days[d].isOpen ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      placeholder="08:00"
-                      aria-label={`${DAY_LABELS[d]} opening time`}
-                      className={`${inputCls} w-24`}
-                      value={days[d].opensAt}
-                      onChange={(e) => setDay(d, { opensAt: e.target.value })}
-                    />
-                    <span className="text-sm text-slate-500">–</span>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      placeholder="17:00"
-                      aria-label={`${DAY_LABELS[d]} closing time`}
-                      className={`${inputCls} w-24`}
-                      value={days[d].closesAt}
-                      onChange={(e) => setDay(d, { closesAt: e.target.value })}
-                    />
-                  </div>
-                ) : (
-                  <span className="text-sm text-slate-400">Closed</span>
-                )}
-              </div>
-              <FieldError msg={errors[d]} />
-            </li>
-          ))}
-        </ul>
-      </fieldset>
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <SaveFeedback state={save} />
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onBack} disabled={save.kind === "saving"}>
-            Back
-          </Button>
-          <Button onClick={onContinue} disabled={!canEdit || save.kind === "saving"}>
-            {save.kind === "saving" ? "Saving…" : "Continue"}
-          </Button>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step 3 helper: area editor (chips + add form), shared shape with the old
-// standalone AreasStep — areas now live on the Services step per brief #8.
+// Step 3 helper: area editor (chips + add form) — same shape as settings.tsx
 // ---------------------------------------------------------------------------
 function AreaEditor({ view }: { view: SettingsView }) {
   const canEdit = view.canEdit;
@@ -742,45 +631,10 @@ function AreaEditor({ view }: { view: SettingsView }) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: account (complete at signup — informational, keeps the brief's 9
-// steps without faking a done-flag the server does not track)
+// Step 3: business hours + emergency handling (old steps 4 and 5 merged into
+// one screen — "when you answer, and what the AI does when you can't")
 // ---------------------------------------------------------------------------
-function AccountStep({ view, onDone }: { view: SettingsView; onDone: () => void }) {
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Account</h2>
-      <p className="mt-1 text-sm text-slate-600">
-        Your account is live — this step is already done.
-      </p>
-      <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
-        <div className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
-          <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Business</dt>
-          <dd className="text-sm text-slate-900">{view.business.name}</dd>
-        </div>
-        <div className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
-          <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Signed in as</dt>
-          <dd className="text-sm text-slate-900">{view.business.email}</dd>
-        </div>
-        <div className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
-          <dt className="w-32 shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Your role</dt>
-          <dd className="text-sm text-slate-900">{view.role}</dd>
-        </div>
-      </dl>
-      <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
-        Your 14-day free trial started at signup — plan options are on the Billing page whenever you are ready.
-      </p>
-      <div className="mt-5 flex items-center justify-end gap-2">
-        <Button onClick={onDone}>Continue</Button>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step 5: emergency prefs (brief #1/#8: after-hours policy + instructions the
-// AI follows on emergency calls; delivery waits for the messaging provider)
-// ---------------------------------------------------------------------------
-function EmergencyStep({
+function HoursEmergStep({
   view,
   onBack,
   onDone,
@@ -790,18 +644,68 @@ function EmergencyStep({
   onDone: () => void;
 }) {
   const canEdit = view.canEdit;
+
+  const initial = (): Record<number, DayHours> => {
+    const out: Record<number, DayHours> = {};
+    for (const d of BUSINESS_DAYS) {
+      const row = view.hours.find((h) => h.dayOfWeek === d);
+      out[d] = {
+        isOpen: row?.isOpen ?? false,
+        opensAt: row?.opensAt ?? "08:00",
+        closesAt: row?.closesAt ?? "17:00",
+      };
+    }
+    return out;
+  };
+
+  const [days, setDays] = useState<Record<number, DayHours>>(initial);
+  const [hoursError, setHoursError] = useState<Record<number, string>>({});
   const [prefs, setPrefs] = useState(view.emergencyPrefs);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
 
-  const onContinue = async () => {
-    setSave({ kind: "saving" });
-    const res = await saveEmergencyPrefsFn({ data: prefs as unknown as Record<string, unknown> });
-    if (res.ok) {
-      setSave({ kind: "saved", message: "Emergency preferences saved." });
-      onDone();
-    } else {
-      setSave({ kind: "error", message: res.error });
+  const setDay = (d: number, patch: Partial<DayHours>) => {
+    setDays((prev) => ({ ...prev, [d]: { ...prev[d], ...patch } }));
+  };
+
+  const clientValidate = (): boolean => {
+    const errs: Record<number, string> = {};
+    for (const d of BUSINESS_DAYS) {
+      const row = days[d];
+      if (!row.isOpen) continue;
+      if (!TIME_RE.test(row.opensAt) || !TIME_RE.test(row.closesAt)) {
+        errs[d] = "Open days need both times in HH:MM (24-hour) format.";
+      } else if (row.opensAt >= row.closesAt) {
+        errs[d] = "Opening time must be earlier than closing time.";
+      }
     }
+    setHoursError(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const onContinue = async () => {
+    if (!clientValidate()) return;
+    setSave({ kind: "saving" });
+    const hours = await saveBusinessHoursFn({
+      data: {
+        days: BUSINESS_DAYS.map((d) => ({
+          dayOfWeek: d,
+          isOpen: days[d].isOpen,
+          opensAt: days[d].opensAt,
+          closesAt: days[d].closesAt,
+        })),
+      },
+    });
+    if (!hours.ok) {
+      setSave({ kind: "error", message: hours.error });
+      return;
+    }
+    const emergency = await saveEmergencyPrefsFn({ data: prefs as unknown as Record<string, unknown> });
+    if (!emergency.ok) {
+      setSave({ kind: "error", message: emergency.error });
+      return;
+    }
+    setSave({ kind: "saved", message: "Hours and emergency settings saved." });
+    onDone();
   };
 
   const toggles: { key: "afterHoursEmergency" | "emergencyNotificationEmail" | "emergencyNotificationSms"; label: string }[] = [
@@ -812,45 +716,99 @@ function EmergencyStep({
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Emergency prefs</h2>
+      <h2 className="text-base font-semibold text-slate-900">Hours &amp; emergencies</h2>
       <p className="mt-1 text-sm text-slate-600">
-        How the AI handles emergencies when you are on a job or closed.
+        When customers can reach you — and what the AI does with emergencies when you're on a job
+        or closed. You can change this anytime in Settings.
       </p>
-      <fieldset disabled={!canEdit} className="mt-4">
-        <legend className="sr-only">Emergency preferences</legend>
+
+      <h3 className="mt-4 text-sm font-semibold text-slate-900">Business hours</h3>
+      <fieldset disabled={!canEdit} className="mt-2">
+        <legend className="sr-only">Business hours</legend>
         <ul className="space-y-2">
-          {toggles.map((t) => (
-            <li key={t.key}>
-              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 transition-colors hover:bg-slate-50 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
-                  checked={prefs[t.key]}
-                  onChange={(e) => setPrefs((prev) => ({ ...prev, [t.key]: e.target.checked }))}
-                />
-                <span className="text-sm font-medium text-slate-900">{t.label}</span>
-              </label>
+          {BUSINESS_DAYS.map((d) => (
+            <li key={d} className="rounded-xl border border-slate-200 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex min-w-[10rem] flex-1 cursor-pointer items-center gap-3">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
+                    checked={days[d].isOpen}
+                    onChange={(e) => setDay(d, { isOpen: e.target.checked })}
+                  />
+                  <span className="text-sm font-medium text-slate-900">{DAY_LABELS[d]}</span>
+                </label>
+                {days[d].isOpen ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="08:00"
+                      aria-label={`${DAY_LABELS[d]} opening time`}
+                      className={`${inputCls} w-24`}
+                      value={days[d].opensAt}
+                      onChange={(e) => setDay(d, { opensAt: e.target.value })}
+                    />
+                    <span className="text-sm text-slate-500">–</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="17:00"
+                      aria-label={`${DAY_LABELS[d]} closing time`}
+                      className={`${inputCls} w-24`}
+                      value={days[d].closesAt}
+                      onChange={(e) => setDay(d, { closesAt: e.target.value })}
+                    />
+                  </div>
+                ) : (
+                  <span className="text-sm text-slate-400">Closed</span>
+                )}
+              </div>
+              <FieldError msg={hoursError[d]} />
             </li>
           ))}
         </ul>
-        <div className="mt-3">
-          <label htmlFor="onb-emg-instructions" className="mb-1.5 block text-sm font-medium text-slate-700">
-            Emergency instructions <span className="font-normal text-slate-400">(the AI follows these)</span>
-          </label>
-          <textarea
-            id="onb-emg-instructions"
-            className={inputCls + " min-h-24"}
-            maxLength={500}
-            rows={4}
-            value={prefs.emergencyInstructions}
-            placeholder="e.g. Tell the caller to shut off the main water valve if it is safe, take the address first, and we will call right back."
-            onChange={(e) => setPrefs((prev) => ({ ...prev, emergencyInstructions: e.target.value }))}
-          />
-        </div>
       </fieldset>
-      <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
-        Saved now. Emergency email/SMS delivery switches on when the messaging provider is connected (Phase 2) — nothing is sent until then.
-      </p>
+
+      <div className="mt-6 border-t border-slate-100 pt-5">
+        <h3 className="text-sm font-semibold text-slate-900">Emergency calls</h3>
+        <fieldset disabled={!canEdit} className="mt-2">
+          <legend className="sr-only">Emergency preferences</legend>
+          <ul className="space-y-2">
+            {toggles.map((t) => (
+              <li key={t.key}>
+                <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 transition-colors hover:bg-slate-50 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
+                    checked={prefs[t.key]}
+                    onChange={(e) => setPrefs((prev) => ({ ...prev, [t.key]: e.target.checked }))}
+                  />
+                  <span className="text-sm font-medium text-slate-900">{t.label}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3">
+            <label htmlFor="onb-emg-instructions" className="mb-1.5 block text-sm font-medium text-slate-700">
+              Emergency instructions <span className="font-normal text-slate-400">(the AI follows these)</span>
+            </label>
+            <textarea
+              id="onb-emg-instructions"
+              className={inputCls + " min-h-24"}
+              maxLength={500}
+              rows={4}
+              value={prefs.emergencyInstructions}
+              placeholder="e.g. Tell the caller to shut off the main water valve if it is safe, take the address first, and we will call right back."
+              onChange={(e) => setPrefs((prev) => ({ ...prev, emergencyInstructions: e.target.value }))}
+            />
+          </div>
+        </fieldset>
+        <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+          Saved now. Emergency email/SMS delivery switches on when the messaging provider is connected — nothing is sent until then.
+        </p>
+      </div>
+
       <div className="mt-5 flex items-center justify-between gap-3">
         <SaveFeedback state={save} />
         <div className="flex items-center gap-2">
@@ -858,7 +816,7 @@ function EmergencyStep({
             Back
           </Button>
           <Button onClick={onContinue} disabled={!canEdit || save.kind === "saving"}>
-            {save.kind === "saving" ? "Saving…" : "Continue"}
+            {save.kind === "saving" ? "Saving…" : "Save & continue"}
           </Button>
         </div>
       </div>
@@ -867,84 +825,12 @@ function EmergencyStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 7: phone number (honest placeholder until the messaging provider is
-// connected — the number is assigned then, nothing to fake today)
+// Step 4: how missed calls become jobs — the old Notifications step plus the
+// honest "Phone number" / "Test the AI" statuses, shown alongside the REAL
+// text-back message and receptionist greeting the product sends (rendered
+// from the same templates the pipeline uses, with the plumber's own name)
 // ---------------------------------------------------------------------------
-function PhoneStep({
-  view,
-  onBack,
-  onDone,
-}: {
-  view: SettingsView;
-  onBack: () => void;
-  onDone: () => void;
-}) {
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Phone number</h2>
-      <p className="mt-1 text-sm text-slate-600">
-        Missed-call text-back runs through a dedicated MissedCall AI number, so your main line stays free.
-      </p>
-      <div className="mt-4 rounded-xl border border-slate-200 p-4">
-        <p className="text-sm text-slate-700">
-          Your main line: <span className="font-semibold">{view.business.phone || "add one in Company info"}</span>
-        </p>
-        <p className="mt-2 text-sm text-slate-500">
-          Your texting number is assigned automatically once the messaging provider is connected (next build).
-          Nothing to configure here yet.
-        </p>
-      </div>
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <span />
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onBack}>
-            Back
-          </Button>
-          <Button onClick={onDone}>Continue</Button>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step 8: test the AI (honest placeholder until the receptionist is live)
-// ---------------------------------------------------------------------------
-function TestAiStep({
-  onBack,
-  onDone,
-}: {
-  onBack: () => void;
-  onDone: () => void;
-}) {
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Test the AI</h2>
-      <p className="mt-1 text-sm text-slate-600">
-        Call or text your AI receptionist to hear how it answers before your customers do.
-      </p>
-      <div className="mt-4 rounded-xl border border-slate-200 p-4">
-        <p className="text-sm text-slate-500">
-          Test calls switch on with the AI receptionist (next build). Finish setup now — this step
-          stays available from Settings.
-        </p>
-      </div>
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <span />
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onBack}>
-            Back
-          </Button>
-          <Button onClick={onDone}>Continue</Button>
-        </div>
-      </div>
-    </section>
-  );
-}
-// ---------------------------------------------------------------------------
-// Step 5: notification preferences (4 checkboxes + honest delivery note)
-// ---------------------------------------------------------------------------
-function PrefsStep({
+function HowItWorksStep({
   view,
   onBack,
   onDone,
@@ -973,31 +859,81 @@ function PrefsStep({
     }
   };
 
+  const businessName = view.business.name || "";
+  const textBackSample = renderSmsTemplate(SMS_TEMPLATES.textBack, businessName);
+  const greetingSample = DEFAULT_GREETING(businessName || null);
+
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Notification preferences</h2>
-      <p className="mt-1 text-sm text-slate-600">Choose how you want to be kept in the loop.</p>
-      <fieldset disabled={!canEdit} className="mt-4">
-        <legend className="sr-only">Notification preferences</legend>
-        <ul className="space-y-2">
-          {NOTIFICATION_PREF_KEYS.map((p) => (
-            <li key={p.key}>
-              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 transition-colors hover:bg-slate-50 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
-                  checked={prefs[p.key]}
-                  onChange={(e) => setPrefs((prev) => ({ ...prev, [p.key]: e.target.checked }))}
-                />
-                <span className="text-sm font-medium text-slate-900">{p.label}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
-      </fieldset>
-      <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
-        {PREFS_DELIVERY_NOTE}
+      <h2 className="text-base font-semibold text-slate-900">How missed calls become jobs</h2>
+      <p className="mt-1 text-sm text-slate-600">
+        Here's what happens when you can't pick up — with your own name in the messages.
       </p>
+
+      {/* The real text-back (same template the pipeline sends) */}
+      <div className="mt-4 space-y-3">
+        <div className="flex justify-start">
+          <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-slate-100 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              When a call goes unanswered, the caller gets
+            </p>
+            <p className="mt-1 text-sm text-slate-900">{textBackSample}</p>
+          </div>
+        </div>
+        <div className="flex justify-start">
+          <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-brand-50 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+              And when someone calls your line, the AI receptionist answers
+            </p>
+            <p className="mt-1 text-sm text-slate-900">“{greetingSample}”</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Honest provider status (the old "Phone number" + "Test the AI" steps) */}
+      <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <div className="px-4 py-3">
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Your texting number</dt>
+          <dd className="mt-0.5 text-sm text-slate-700">
+            Assigned automatically once the messaging provider is connected — your main line stays
+            free. Main line on file: <span className="font-semibold">{view.business.phone || "add one in Your business"}</span>
+          </dd>
+        </div>
+        <div className="px-4 py-3">
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Test calls</dt>
+          <dd className="mt-0.5 text-sm text-slate-700">
+            Open up once the AI receptionist is live — you'll be able to hear it before your
+            customers do (from Settings, anytime).
+          </dd>
+        </div>
+      </dl>
+
+      {/* Notification preferences (the old step 5) */}
+      <div className="mt-6 border-t border-slate-100 pt-5">
+        <h3 className="text-sm font-semibold text-slate-900">Keep yourself in the loop</h3>
+        <fieldset disabled={!canEdit} className="mt-2">
+          <legend className="sr-only">Notification preferences</legend>
+          <ul className="space-y-2">
+            {NOTIFICATION_PREF_KEYS.map((p) => (
+              <li key={p.key}>
+                <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 transition-colors hover:bg-slate-50 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20"
+                    checked={prefs[p.key]}
+                    onChange={(e) => setPrefs((prev) => ({ ...prev, [p.key]: e.target.checked }))}
+                  />
+                  <span className="text-sm font-medium text-slate-900">{p.label}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </fieldset>
+        <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+          {PREFS_DELIVERY_NOTE}
+        </p>
+      </div>
+
       <div className="mt-5 flex items-center justify-between gap-3">
         <SaveFeedback state={save} />
         <div className="flex items-center gap-2">
@@ -1005,7 +941,7 @@ function PrefsStep({
             Back
           </Button>
           <Button onClick={onContinue} disabled={!canEdit || save.kind === "saving"}>
-            {save.kind === "saving" ? "Saving…" : "Continue"}
+            {save.kind === "saving" ? "Saving…" : "Save & continue"}
           </Button>
         </div>
       </div>
@@ -1014,7 +950,9 @@ function PrefsStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: review (read-only summary) + finish (derived from onboarding nudge)
+// Step 5: you're live — light summary + finish (the old Review & activate,
+// now ending on a dashboard welcome state). Phone/test-AI stay open until the
+// providers connect and never block finishing.
 // ---------------------------------------------------------------------------
 function formatHoursSummary(hours: SettingsView["hours"]): string {
   const open = BUSINESS_DAYS.filter((d) => hours.find((h) => h.dayOfWeek === d)?.isOpen);
@@ -1041,12 +979,12 @@ function formatHoursSummary(hours: SettingsView["hours"]): string {
     : segs.join(", ") + " (varies by day — see Settings)";
 }
 
-function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack: () => void }) {
+function LiveStep({ view: initialView, onBack }: { view: SettingsView; onBack: () => void }) {
   const navigate = useNavigate();
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
-  // The route loader ran once at wizard mount — before steps 1-5 saved anything
-  // — so `initialView` can be stale. Re-fetch the persisted values when the
-  // Review step mounts so the summary shows what is actually in the database.
+  // The route loader ran once at wizard mount — before earlier steps saved
+  // anything — so `initialView` can be stale. Re-fetch the persisted values
+  // when this step mounts so the summary shows what is actually in the DB.
   const [view, setView] = useState(initialView);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
@@ -1070,14 +1008,13 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
     setSave({ kind: "saving" });
     // getOnboardingNudgeFn resolves to the nudge object itself (or null on failure) — no result wrapper.
     const nudge = await getOnboardingNudgeFn();
-    // "Phone number" and "Test the AI" stay open until the messaging provider
-    // and receptionist are connected (build 3+) — they must not block finish.
-    // Everything self-serve done -> finish succeeds even below 100%.
+    // percent now covers the 5 self-serve steps (settingsFns P4-O): 100 means
+    // everything a plumber can do self-serve is done. The dashboard renders
+    // its "you're live" panel for ?welcome=done.
     if (nudge && nudge.percent === 100) {
-      await navigate({ to: "/dashboard" });
+      await navigate({ to: "/dashboard", search: { welcome: "done" } });
     } else if (nudge) {
-      // resumeStep is a 0-based index into the 8 server-derived steps; wizard
-      // step = derived index + 2 (step 1 "Account" has no derived done-flag).
+      // resumeStep is a 0-based index into the 8 server-derived steps.
       const idx = typeof nudge.resumeStep === "number" ? nudge.resumeStep : -1;
       const nextUp =
         idx >= 0 && idx < DERIVED_LABELS.length ? "Next up: " + DERIVED_LABELS[idx] + ". " : "";
@@ -1096,7 +1033,7 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
         missing.push("Notifications (turn at least one on)");
       }
       if (missing.length === 0) {
-        await navigate({ to: "/dashboard" });
+        await navigate({ to: "/dashboard", search: { welcome: "done" } });
         return;
       }
       const msg =
@@ -1117,7 +1054,6 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
         (b.phone ? " · " + b.phone : "") +
         (b.city ? " · " + b.city + (b.state ? ", " + b.state : "") : ""),
     ],
-    ["Time zone", b.timezone],
     ["Services", String(view.services.length) + " selected"],
     ["Service areas", String(view.serviceAreas.length) + " added"],
     ["Hours", formatHoursSummary(view.hours)],
@@ -1138,7 +1074,7 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <h2 className="text-base font-semibold text-slate-900">Review &amp; finish</h2>
+      <h2 className="text-base font-semibold text-slate-900">You're ready to go live</h2>
       <p className="mt-1 text-sm text-slate-600">
         A quick look at what you've set up. Everything stays editable in Settings.
       </p>
@@ -1156,6 +1092,10 @@ function ReviewStep({ view: initialView, onBack }: { view: SettingsView; onBack:
           ))}
         </dl>
       )}
+      <p className="mt-3 rounded-xl bg-brand-50 px-4 py-3 text-xs leading-relaxed text-brand-900">
+        Your 14-day free trial started at signup — plan options are on the Billing page whenever
+        you're ready. Nothing is charged during the trial.
+      </p>
       <div className="mt-5 flex items-center justify-between gap-3">
         <SaveFeedback state={save} />
         <div className="flex items-center gap-2">

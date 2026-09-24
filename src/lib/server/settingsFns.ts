@@ -142,16 +142,16 @@ function sanitizeNotificationPrefs(raw: unknown): NotificationPrefs {
 // ---------------------------------------------------------------------------
 // Onboarding progress (derived from DB state — nothing extra is stored)
 // ---------------------------------------------------------------------------
-// Phase 2 nine-step onboarding (owner brief section 12):
-// account -> company info -> services -> hours -> emergency prefs ->
-// notification phone/email -> phone number -> test AI -> activate.
+// P4-O five-screen wizard (owner requirement area 2: simple onboarding):
+// your business -> services & area -> hours & emergencies -> how missed calls
+// become jobs (notifications + provider status) -> you're live. The wizard is
+// presentational; completion is still derived server-side from these 8 flags.
 // "Account" is complete at signup (the session IS the account) and is never
-// unfinished, so the derived list below has 8 entries. Service areas (Phase 1
-// step 4) fold into the services step — "what you do + where you do it" —
-// matching the brief's Business Settings grouping. "Phone number" and "test
-// AI" are honest placeholders until the Twilio + LLM providers are connected
-// (Phase 2 build #3+), so their done flags stay false and the wizard lists
-// them as upcoming rather than faking completion.
+// unfinished, so the derived list has 8 entries. Service areas fold into the
+// services step — "what you do + where you do it" — matching the brief's
+// Business Settings grouping. "Phone number" and "Test the AI" are honest
+// placeholders until the Twilio + LLM providers are connected, so their done
+// flags stay false; they are shown as provider status and never block finish.
 const ONBOARDING_STEPS = [
   { id: 1, key: "company" as const, label: "Company info" },
   { id: 2, key: "services" as const, label: "Services & area" },
@@ -202,9 +202,15 @@ function computeStepDone(args: StepDoneArgs): boolean[] {
 
 function onboardingState(business: Business, done: boolean[]): OnboardingState {
   const steps = ONBOARDING_STEPS.map((s, i) => ({ ...s, done: done[i] }));
-  const percent = Math.round((done.filter(Boolean).length / steps.length) * 100);
+  // P4-O: percent covers the 5 self-serve steps only. "Phone number", "Test
+  // the AI" and "Review & activate" stay open until the messaging/voice
+  // providers connect — they must never cap a finished plumber at 62%.
+  const selfServe = done.slice(0, 5);
+  const percent = Math.round((selfServe.filter(Boolean).length / selfServe.length) * 100);
+  // 0-based index into the 8 derived steps (the OnboardingState contract) —
+  // the wizard maps it onto its screens; steps.length (8) when all done.
   const resumeStep = done.findIndex((d) => !d);
-  const firstUnfinished = resumeStep === -1 ? steps.length : steps[resumeStep].id;
+  const firstUnfinished = resumeStep === -1 ? steps.length : resumeStep;
   const skipped =
     typeof (business as unknown as { settings?: Record<string, unknown> }).settings
       ?.onboardingSkippedAt === "string";

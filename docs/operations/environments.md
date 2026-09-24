@@ -77,3 +77,37 @@ IP, defaults generous so the smoke suite and normal humans never trip them:
 `RATE_LIMIT_DISABLED=1` turns the layer off entirely (CI/tests). If the app
 ever runs multi-instance, swap the counter store for Postgres/Redis behind
 the same `checkRateLimit` signature.
+
+## Backups & restore (Neon)
+
+The production database is Neon, which keeps **point-in-time restore (PITR)**
+history on every branch by default — no backup job of ours runs or needs to
+run. What this buys, and how to use it:
+
+- **What is covered:** every table (`businesses`, `leads`, `conversations`,
+  `messages`, `appointments`, `subscriptions`/usage, `system_errors`, …) on the
+  branch `DATABASE_URL` points at. Restore history length follows the Neon
+  plan's retention window (check the Neon console → Branch → Restore for the
+  current window; the free/launch plan is typically several days).
+- **Point-in-time restore (the main tool):** in the Neon console, select the
+  production branch → **Restore** → pick a timestamp before the incident →
+  restore. Neon offers (a) a **temporary branch** restored to that moment —
+  the safe default: inspect/extract the lost rows, then copy them back with
+  SQL — or (b) restoring the branch itself, which rewinds it and **discards
+  every write after the chosen timestamp**. Prefer (a) unless the whole
+  database is known-bad; the temporary branch touches nothing live.
+- **Recovering rows (typical incident):** restore a temp branch to just before
+  the bad write, then `INSERT INTO … SELECT` the affected rows from the temp
+  branch into production via a second connection string (or export with
+  `pg_dump` and re-import). Never point the app's `DATABASE_URL` at the temp
+  branch except as a full deliberate cutover.
+- **Full cutover (last resort):** restore the branch in place, then rotate the
+  `DATABASE_URL` value in platform Secrets only if Neon issued a new
+  connection string — the app picks it up on restart; no rebuild needed.
+- **Schema after restore:** migrations are recorded in `schema_migrations` and
+  are part of the data, so a restored database carries its matching schema. If
+  the restore point predates a migration, re-run `bun run db:migrate` pointed
+  at the restored database to bring it forward.
+- **Extra safety for big changes:** before destructive maintenance (bulk
+  deletes, schema surgery outside the migration runner), note the exact UTC
+  timestamp in the PR/ticket first — it is the restore target if it goes wrong.
