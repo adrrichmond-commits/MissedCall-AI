@@ -56,13 +56,17 @@ async function leadAggregates(
         AND pipeline_value_cents IS NOT NULL`,
   ]);
   const c = countsRows[0] as unknown as Record<string, unknown>;
-  const rows = wonRows as unknown as { converted_at: Date; pipeline_value_cents: unknown }[];
+  // src/db.ts camelCase-ifies every row key (snake_case columns -> camelCase
+  // properties), so the aliases above MUST be read camelCase — a snake_case
+  // read is always undefined and silently zeroes the KPI (found by the
+  // P3-H isolation suite: scripts/test-isolation.ts).
+  const rows = wonRows as unknown as { convertedAt: unknown; pipelineValueCents: unknown }[];
   return {
-    totalLeads: toNumber(c.total_leads),
-    leadsWithValue: toNumber(c.leads_with_value),
+    totalLeads: toNumber(c.totalLeads),
+    leadsWithValue: toNumber(c.leadsWithValue),
     wonRows: rows.map((r) => ({
-      convertedAt: new Date(r.converted_at),
-      cents: toNumber(r.pipeline_value_cents),
+      convertedAt: new Date(r.convertedAt as string),
+      cents: toNumber(r.pipelineValueCents),
     })),
   };
 }
@@ -88,7 +92,8 @@ export async function missedCallRecoveryCounts(
     ) c ON c.lead_id = l.id
     WHERE l.business_id = ${businessId} AND l.source = 'missed_call'`;
   const r = rows[0] as unknown as Record<string, unknown>;
-  return { missedCalls: toNumber(r.missed_calls), recovered: toNumber(r.recovered) };
+  // Aliases are read camelCase (see leadAggregates note — src/db.ts maps keys).
+  return { missedCalls: toNumber(r.missedCalls), recovered: toNumber(r.recovered) };
 }
 
 /** Appointment rows tied to recovered missed-call leads (business-scoped). */
@@ -205,7 +210,7 @@ export async function revenueFunnelCounts(businessId: string): Promise<FunnelCou
   const lr = leadRows[0] as unknown as Record<string, unknown>;
   const cr = convRows[0] as unknown as Record<string, unknown>;
   const ar = apptRows[0] as unknown as Record<string, unknown>;
-  const missedCalls = toNumber(lr.missed_calls);
+  const missedCalls = toNumber(lr.missedCalls);
   return {
     // Until the P3-E voice receptionist exists, every call the system sees is
     // a missed call — callsReceived mirrors missedCalls (documented in
@@ -213,10 +218,10 @@ export async function revenueFunnelCounts(businessId: string): Promise<FunnelCou
     callsReceived: missedCalls,
     callsHandledByAi: toNumber(cr.handled),
     missedCalls,
-    missedCallsRecovered: toNumber(lr.missed_recovered),
+    missedCallsRecovered: toNumber(lr.missedRecovered),
     leads: toNumber(lr.leads),
     qualified: toNumber(lr.qualified),
-    appointments: toNumber(ar.appt_leads),
+    appointments: toNumber(ar.apptLeads),
     won: toNumber(lr.won),
   };
 }

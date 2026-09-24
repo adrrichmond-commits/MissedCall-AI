@@ -1,0 +1,135 @@
+# CI — MissedCall AI (P3-H pt2).
+#
+# Two jobs, both required to pass before merge:
+#   1. build-and-unit-tests — install, prod build (generates src/routeTree.gen.ts,
+#      which is gitignored), tsc --noEmit, then the 11 mock-based unit suites.
+#      None of them touch the network or need real provider keys (verified P3-H:
+#      email/stripe/twilio suites stub their providers and fabricate signatures;
+#      they pass with zero credentials), so no env-gating is wired.
+#   2. smoke-and-isolation — a Postgres 16 service container, migrations + demo
+#      seed against it, the REAL prod build served on 127.0.0.1:3210 via
+#      scripts/prod-serve.ts (the PR #26 local repro pattern, repo-committed),
+#      then the E2E smoke suite and the permanent business-isolation suite.
+#
+# Runtime budget: each job stays well under 10 minutes on ubuntu-latest.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Cancel superseded runs of the same branch/PR instead of queueing them.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pin the bun version to what the team runs locally (bun.lock is generated
+  # with it); bump deliberately, together with a local `bun install` re-run.
+  BUN_VERSION: "1.4.2"
+
+jobs:
+  build-and-unit-tests:
+    name: Build + typecheck + unit suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Vite's TanStack Start plugin generates src/routeTree.gen.ts during the
+      # build (it is gitignored), so tsc MUST run after this step.
+      - name: Build
+        run: bun run build
+
+      - name: Typecheck (tsc --noEmit)
+        run: bun run typecheck
+
+      - name: Unit suites (mock-based, no external services)
+        run: |
+          suites="admin billing classify crm email kb pipeline revenue sms stripe voice"
+          for t in $suites; do
+            echo "::group::bun scripts/test-$t.ts"
+            if bun "scripts/test-$t.ts"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::suite failed: scripts/test-$t.ts"
+              exit 1
+            fi
+          done
+
+  smoke-and-isolation:
+    name: Smoke + isolation (Postgres + prod build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: missedcall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d missedcall"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Plain postgres:// URL + the local-pg shim: the Neon serverless driver
+      # is routed over direct pg connections (see scripts/local-pg-shim.ts).
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/missedcall
+      USE_LOCAL_POSTGRES: "1"
+      PORT: "3210"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Apply migrations
+        run: bun run db:migrate
+
+      # test-smoke.ts logs in as the seeded demo owner (Dana Whitfield).
+      - name: Seed demo data
+        run: bun run db:seed
+
+      - name: Build prod bundle (generates src/routeTree.gen.ts)
+        run: bun run build
+
+      - name: Serve prod build on 127.0.0.1:3210
+        run: |
+          bun scripts/prod-serve.ts > /tmp/prod-serve.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:3210/api/healthz > /dev/null; then
+              echo "prod-build server healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::prod-build server never became healthy"
+          cat /tmp/prod-serve.log
+          exit 1
+
+      - name: E2E smoke suite (21 checks, live HTTP + RPC + DB)
+        run: bun scripts/test-smoke.ts http://127.0.0.1:3210
+
+      - name: Business data-isolation suite (two businesses, zero cross-reads)
+        run: bun scripts/test-isolation.ts
