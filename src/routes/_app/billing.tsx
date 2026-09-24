@@ -5,6 +5,7 @@ import {
   getBillingDetailsFn,
   getBillingOverviewFn,
   reactivateSubscriptionFn,
+  requestPlanChangeFn,
   type BillingOverview,
   type BillingOverviewP3F,
 } from "~/lib/server/billingFns";
@@ -35,16 +36,67 @@ function PlanCard({
   plan,
   currentPlanId,
   canEdit,
+  stripeApiConfigured,
 }: {
   plan: BillingOverview["plans"][number];
   currentPlanId: string;
   canEdit: boolean;
+  stripeApiConfigured: boolean;
 }) {
   const isCurrent = plan.id === currentPlanId;
   const cta =
     plan.id === "pro"
-      ? `Upgrade to Pro — $${plan.priceCents / 100}/mo`
-      : `Switch to Starter — $${plan.priceCents / 100}/mo`;
+      ? "Upgrade to Pro — $" + formatPlanPrice(plan) + "/mo"
+      : "Switch to Starter — $" + formatPlanPrice(plan) + "/mo";
+  const [busy, setBusy] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
+  // API-driven checkout (primary when the Stripe key is configured): the
+  // server creates a Checkout Session scoped to this business and the browser
+  // redirects to Stripe's hosted page. Without keys, fall back to the hosted
+  // payment link (pricing.ts checkoutUrl) — same behavior as before.
+  const startCheckout = async () => {
+    setBusy(true);
+    setCardError(null);
+    const res = await requestPlanChangeFn({ data: { planId: plan.id } });
+    if (res.ok && res.data.checkoutUrl) {
+      window.location.href = res.data.checkoutUrl;
+      return;
+    }
+    setBusy(false);
+    if (res.ok) {
+      setCardError(res.data.message);
+    } else {
+      setCardError(res.error);
+    }
+  };
+  const checkoutControl = canEdit ? (
+    isCurrent ? (
+      <Button variant="secondary" disabled className="w-full">
+        Current plan
+      </Button>
+    ) : stripeApiConfigured ? (
+      <Button variant="primary" disabled={busy} onClick={startCheckout} className="w-full">
+        {busy ? "Opening Stripe checkout…" : cta}
+      </Button>
+    ) : (
+      <a
+        href={plan.checkoutUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+      >
+        {cta}
+        <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+          <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+          <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+        </svg>
+      </a>
+    )
+  ) : (
+    <Button variant="secondary" disabled className="w-full">
+      Owner access required
+    </Button>
+  );
   return (
     <section
       className={`flex flex-col rounded-2xl border bg-white p-5 shadow-sm sm:p-6 ${
@@ -81,34 +133,18 @@ function PlanCard({
           </li>
         ))}
       </ul>
+      {cardError ? (
+        <p className="mt-4 text-sm font-medium text-red-700" role="alert">
+          {cardError}
+        </p>
+      ) : null}
       <div className="mt-5">
-        {canEdit ? (
-          isCurrent ? (
-            <Button variant="secondary" disabled className="w-full">
-              Current plan
-            </Button>
-          ) : (
-            <a
-              href={plan.checkoutUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
-            >
-              {cta}
-              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
-                <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
-                <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
-              </svg>
-            </a>
-          )
-        ) : (
-          <Button variant="secondary" disabled className="w-full">
-            Owner access required
-          </Button>
-        )}
+        {checkoutControl}
         {!isCurrent ? (
           <p className="mt-2 text-center text-xs text-slate-400">
-            Opens Stripe checkout in a new tab.
+            {stripeApiConfigured
+              ? "Checkout is handled securely on Stripe — your plan activates automatically after payment."
+              : "Opens Stripe checkout in a new tab."}
           </p>
         ) : null}
       </div>
@@ -125,6 +161,21 @@ function BillingPage() {
 
   const canEdit = view.canEdit;
   const canceled = view.subscriptionStatus === "canceled";
+
+  // Return landing from Stripe checkout (?checkout=success|cancelled — set by
+  // the Checkout Session's success_url/cancel_url). Honest, read-only toast:
+  // the plan itself only changes when the webhook confirms the subscription.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const result = new URLSearchParams(window.location.search).get("checkout");
+    if (result === "success") {
+      setStatusMessage(
+        "Checkout started — welcome aboard! Your plan activates automatically once Stripe confirms the subscription.",
+      );
+    } else if (result === "cancelled") {
+      setStatusMessage("Checkout was cancelled — nothing was charged and nothing changed. You can pick a plan anytime.");
+    }
+  }, []);
 
   const refresh = async () => {
     const res = await getBillingOverviewFn();
@@ -213,7 +264,13 @@ function BillingPage() {
       {/* Tier cards */}
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         {view.plans.map((plan) => (
-          <PlanCard key={plan.id} plan={plan} currentPlanId={view.plan} canEdit={canEdit} />
+          <PlanCard
+            key={plan.id}
+            plan={plan}
+            currentPlanId={view.plan}
+            canEdit={canEdit}
+            stripeApiConfigured={view.stripeApiConfigured}
+          />
         ))}
       </div>
 

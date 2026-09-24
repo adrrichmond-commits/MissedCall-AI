@@ -51,6 +51,7 @@ required to run the product):
 | `TWILIO_VOICE_FORWARD_NUMBER` | last-resort voice transfer target | voice falls back to voicemail |
 | `LLM_API_KEY` | LLM classification tier | rules engine classifies (keyless launch default) |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | checkout + subscription webhooks | billing pages render dormant; webhooks 503 |
+| `STRIPE_PRICE_STARTER` / `STRIPE_PRICE_PRO` | maps Stripe price IDs to plan tiers (`price_…`, live mode, from the dedicated MissedCall AI Stripe account) | checkout resolves prices by `lookup_key` (`starter` / `pro`) on the account's provisioned catalog instead |
 | `EMAIL_PROVIDER_KEY` (or equivalent per email.ts) | outbound owner emails | in-app notifications still work |
 | `PLATFORM_OWNER_EMAIL` | opens `/admin` for that account | admin surface 404s for everyone |
 | `ERROR_MONITOR_DSN` | optional external error-monitor POST | no-op (errors still land in `system_errors`) |
@@ -60,6 +61,27 @@ required to run the product):
 Never commit `.env`; values live in platform Secrets. A build-time-baked
 value (`import.meta.env`, `VITE_*`) only changes on the next publish — prefer
 server-side `process.env` reads, which pick up Secret changes on restart.
+
+## Stripe account (live billing)
+Billing runs against a **dedicated MissedCall AI Stripe account** (restricted
+key + webhook signing secret live in Secrets as `STRIPE_SECRET_KEY` /
+`STRIPE_WEBHOOK_SECRET`) — not any platform-connected account. The catalog is
+provisioned there: products `MissedCall AI — Starter` and `MissedCall AI — Pro`,
+each with one recurring monthly USD price at the locked amounts from
+`src/lib/pricing.ts` and `lookup_key`s `starter` / `pro`. Checkout resolves
+`STRIPE_PRICE_STARTER` / `STRIPE_PRICE_PRO` first, then those lookup keys.
+
+Account facts that code depends on:
+- **Managed Payments** is enabled by default on the account, so every product
+  MUST carry a `tax_code` (ours: `txcd_10000000`, general services) or
+  Checkout Session creation is refused with `invalid_request_error`.
+- The webhook endpoint targets `/api/webhooks/stripe` with events
+  `checkout.session.completed`, `customer.subscription.created`,
+  `customer.subscription.updated`, `customer.subscription.deleted`,
+  `invoice.payment_failed`. `customer.subscription.updated` is REQUIRED — it
+  is the activation/status-sync path (trial→active, dunning recovery).
+- Plan state is written ONLY by the webhook; the app never flips
+  `businesses.plan` directly (single-writer rule).
 
 ## Rate limits (the one config module)
 

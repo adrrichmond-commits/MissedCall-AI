@@ -529,5 +529,62 @@ process.env.STRIPE_SECRET_KEY = "sk_test_unit_test";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_unit_test";
 check("503 gate: configured again", readStripeConfig() !== null, true);
 
+
+// --- Live-billing helpers (src/lib/server/stripeApi.ts, pure fns only) ------------
+{
+  const { buildSubscriptionCheckoutParams, checkoutReturnUrls, encodeStripeParams, trialEndSecondsFor } =
+    await import("../src/lib/server/stripeApi");
+
+  // Param encoding: nested objects + arrays -> Stripe bracket notation.
+  check(
+    "encode: nested+array params",
+    encodeStripeParams({ mode: "subscription", line_items: [{ price: "price_x", quantity: 1 }] }),
+    "mode=subscription&line_items%5B0%5D%5Bprice%5D=price_x&line_items%5B0%5D%5Bquantity%5D=1",
+  );
+  check("encode: nulls dropped", encodeStripeParams({ a: null, b: 2 }), "b=2");
+
+  // Trial mirroring: future window carried over; expired/unset -> bill now.
+  const now = 1_700_000_000_000;
+  check("trial: future window mirrored", trialEndSecondsFor(new Date(now + 86_400_000), now), 1_700_086_400);
+  check("trial: expired window -> null (bill now)", trialEndSecondsFor(new Date(now - 1000), now), null);
+  check("trial: unset -> null", trialEndSecondsFor(null, now), null);
+
+  // Checkout session params: metadata + client_reference_id carry the business id.
+  const params = buildSubscriptionCheckoutParams({
+    priceId: "price_pro",
+    businessId: "biz-1",
+    successUrl: "https://x/billing?checkout=success",
+    cancelUrl: "https://x/billing?checkout=cancelled",
+    trialEndSeconds: 1_700_000_864,
+    customerEmail: "owner@example.com",
+  });
+  check("checkout: mode subscription", params["mode"], "subscription");
+  check("checkout: line item price", (params["line_items"] as { price: string }[])[0]?.price, "price_pro");
+  check(
+    "checkout: subscription metadata",
+    (params["subscription_data"] as { metadata: Record<string, string> }).metadata.businessId,
+    "biz-1",
+  );
+  check("checkout: trial_end mirrors app window", (params["subscription_data"] as { trial_end?: number }).trial_end, 1_700_000_864);
+  check("checkout: client_reference_id", params["client_reference_id"], "biz-1");
+  check("checkout: customer_email prefilled", params["customer_email"], "owner@example.com");
+  const noTrial = buildSubscriptionCheckoutParams({
+    priceId: "price_x",
+    businessId: "biz-2",
+    successUrl: "s",
+    cancelUrl: "c",
+    trialEndSeconds: null,
+    customerEmail: null,
+  });
+  check("checkout: no trial_end when window over", (noTrial["subscription_data"] as { trial_end?: number }).trial_end, undefined);
+  check("checkout: no customer_email when absent", noTrial["customer_email"], undefined);
+
+  // Return URLs land on the billing page (matches the ?checkout= toast handling).
+  check("return urls", checkoutReturnUrls("https://live.example/"), {
+    successUrl: "https://live.example/billing?checkout=success",
+    cancelUrl: "https://live.example/billing?checkout=cancelled",
+  });
+}
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : "\n" + failures + " TEST(S) FAILED");
 process.exit(failures === 0 ? 0 : 1);
