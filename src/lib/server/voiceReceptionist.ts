@@ -58,10 +58,16 @@ import {
   record,
   goodbyeDocument,
   apologyDocument,
-  DEFAULT_GREETING,
   type TwiMLElement,
 } from "~/lib/voice/twiml";
 import { normalizeTransferNumber, resolveTransferRules } from "~/lib/voice/transferRules";
+import {
+  receptionistConfigFromSettings,
+  resolveReceptionistGreeting,
+  confirmPromptOverride,
+  policyNotesForLead,
+  type ReceptionistConfig,
+} from "~/lib/voice/receptionistConfig";
 import { captureSystemError } from "~/lib/server/errorSink";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { PipelineLlm } from "~/lib/server/classifyPipeline";
@@ -100,7 +106,12 @@ export interface VoiceCallStore {
   /** usage_counters increment via the P3-F gate helpers (meterAction). */
   meterCallHandled(businessId: string): Promise<void>;
   /** Post-call AI summary; null when no summary could be produced. */
-  summarizeCall(args: { businessId: string; transcript: CallTranscriptTurn[] }): Promise<string | null>;
+  summarizeCall(args: {
+    businessId: string;
+    transcript: CallTranscriptTurn[];
+    /** P4-O: the studio's free-form company instructions steer the summary. */
+    instructions?: string;
+  }): Promise<string | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,11 +329,15 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
     });
   }
 
-  // 7. First touch: greet + gather.
+  // 7. First touch: greet + gather. P4-O: the greeting is the studio-
+  //    configured one (name/greeting) when set, otherwise the same default
+  //    as before — resolveReceptionistGreeting guarantees default parity.
   if (created) {
+    const rcfg = receptionistConfigFromSettings(business.settings);
+    const greeting = resolveReceptionistGreeting(rcfg, business.name || null);
     const flow = initialFlowState();
     const transcript: CallTranscript = {
-      turns: [{ role: "ai", text: DEFAULT_GREETING(business.name || null), at: isoNow(args.now) }],
+      turns: [{ role: "ai", text: greeting, at: isoNow(args.now) }],
       flow: flow as unknown as Record<string, unknown>,
     };
     await args.store
@@ -331,7 +346,7 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
     return {
       status: 200,
       xml: twiml(
-        say(DEFAULT_GREETING(business.name || null)),
+        say(greeting),
         gather({ actionUrl: args.url, prompt: PROMPTS.need }),
       ),
     };
@@ -340,6 +355,9 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
   // 8. Subsequent touch: run the pure flow engine over the caller's speech.
   const flow = flowOf(call.transcript);
   const turns = call.transcript?.turns ?? [];
+  // P4-O: the studio config rides the whole turn (FAQ branch, policy-driven
+  // confirm prompt, policy notes on captured leads).
+  const rcfg = receptionistConfigFromSettings(business.settings);
 
   // 8a. Record the caller's utterance (including silence as an empty turn).
   const callerTurn: CallTurn = { role: "caller", text: p.SpeechResult ?? "", at: isoNow(args.now) };
@@ -353,6 +371,8 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
     hours: await args.store.listBusinessHours(business.id).catch(() => null),
     llm: await voiceLlmAsync(),
     afterHoursEmergency: readAfterHoursEmergency(business.settings),
+    ...(rcfg.faqs.length > 0 ? { faqs: rcfg.faqs.map((f) => ({ question: f.question, answer: f.answer })) } : {}),
+    ...(confirmPromptOverride(rcfg) ? { confirmPrompt: confirmPromptOverride(rcfg) as string } : {}),
   };
   const { action, state } = await stepCallFlow(flow, p.SpeechResult ?? "", ctx);
 
@@ -360,14 +380,14 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
   let leadCaptured = false;
   let lead: Lead | null = null;
   if (action.kind === "speak_then_gather" && action.stage === "confirm" && !state.leadCaptured) {
-    lead = await captureCallLead(args, business, state, turnsWithCaller, p);
+    lead = await captureCallLead(args, business, state, turnsWithCaller, p, rcfg);
     leadCaptured = lead != null;
     state.leadCaptured = leadCaptured;
   }
 
   // 8d. Emergency: capture the lead as emergency (script already spoken).
   if (action.kind === "emergency" && !state.leadCaptured) {
-    lead = await captureEmergencyLead(args, business, state, turnsWithCaller, p);
+    lead = await captureEmergencyLead(args, business, state, turnsWithCaller, p, rcfg);
     leadCaptured = lead != null;
     state.leadCaptured = leadCaptured;
   }
@@ -402,6 +422,10 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
             emergencySeverity: state.emergency.severity,
             fromNumber: p.From,
             transferedTo: rules.transferNumber,
+            // P4-O: studio emergency policies reach the human even when no
+            // lead row exists to carry the notes (transfer-before-capture).
+            ...(rcfg.emergencyHandling.trim() ? { emergencyHandling: rcfg.emergencyHandling.trim() } : {}),
+            ...(rcfg.escalationNotes.trim() ? { escalationNotes: rcfg.escalationNotes.trim() } : {}),
           },
         })
         .catch(() => undefined);
@@ -436,7 +460,7 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
 
   // 8i. Post-call work for terminal outcomes (summary + lead attach).
   if (action.kind === "goodbye" || action.kind === "voicemail") {
-    await finalizeCall(args, business.id, call.id, transcript.turns);
+    await finalizeCall(args, business.id, call.id, transcript.turns, rcfg);
   }
 
   const xml = actionToTwiML(action, { actionUrl: args.url, transferNumber: transferedTo, businessName: business.name || null });
@@ -460,8 +484,10 @@ function isoNow(now?: Date): string {
  * Usage note: a voice call is metered ONCE on calls_handled — the AI turns
  * inside it are covered by the call, not double-metered on ai_turns
  * (documented usage-on-voice decision in the header).
+ * Exported for the P4-O simulation server fn: the test-call preview runs the
+ * SAME engine with the SAME LLM seam as a live call.
  */
-async function voiceLlmAsync(): Promise<PipelineLlm | null> {
+export async function voiceLlmAsync(): Promise<PipelineLlm | null> {
   const { isLlmConfigured, readLlmConfig, llmComplete } = await import("~/lib/server/llm");
   if (!isLlmConfigured()) return null;
   const cfg = readLlmConfig();
@@ -529,7 +555,9 @@ function leadInputFromFlow(
   p: VoiceWebhookParams,
   afterHours: boolean,
   transcriptTurns: CallTranscriptTurn[],
+  rcfg: ReceptionistConfig,
 ): CreateLeadInput {
+  const policyNotes = policyNotesForLead(rcfg, { emergency: state.emergency != null });
   return {
     source: "missed_call",
     serviceNeed: state.serviceNeed ?? "Phone call — need not specified",
@@ -541,6 +569,8 @@ function leadInputFromFlow(
       "Captured by the AI voice receptionist.",
       afterHours ? "After-hours call." : "During business hours.",
       "Transcript: " + transcriptTurns.map((t) => (t.role === "caller" ? "Caller: " : "AI: ") + t.text).join(" | "),
+      // P4-O: the owner's studio policies ride the lead so staff see them.
+      ...policyNotes,
     ].join(" "),
   };
 }
@@ -551,6 +581,7 @@ async function captureCallLead(
   state: CallFlowState,
   turns: CallTranscriptTurn[],
   p: VoiceWebhookParams,
+  rcfg: ReceptionistConfig,
 ): Promise<Lead | null> {
   try {
     const afterHours = isAfterHours(
@@ -558,7 +589,7 @@ async function captureCallLead(
       (business as { timezone?: string | null }).timezone ?? null,
       await args.store.listBusinessHours(business.id).catch(() => null),
     );
-    const input = leadInputFromFlow(state, p, afterHours, turns);
+    const input = leadInputFromFlow(state, p, afterHours, turns, rcfg);
     const lead = await args.store.captureLead({
       businessId: business.id,
       businessName: business.name,
@@ -577,6 +608,7 @@ async function captureEmergencyLead(
   state: CallFlowState,
   turns: CallTranscriptTurn[],
   p: VoiceWebhookParams,
+  rcfg: ReceptionistConfig,
 ): Promise<Lead | null> {
   try {
     const afterHours = isAfterHours(
@@ -584,7 +616,7 @@ async function captureEmergencyLead(
       (business as { timezone?: string | null }).timezone ?? null,
       await args.store.listBusinessHours(business.id).catch(() => null),
     );
-    const input = leadInputFromFlow(state, p, afterHours, turns);
+    const input = leadInputFromFlow(state, p, afterHours, turns, rcfg);
     input.urgency = "emergency";
     input.serviceNeed = state.emergency
       ? state.emergency.name + " (emergency — safety script given)"
@@ -604,6 +636,10 @@ async function captureEmergencyLead(
           emergencySeverity: state.emergency?.severity,
           afterHours,
           fromNumber: p.From,
+          // P4-O: the studio's emergency handling instructions reach the
+          // human responding — spoken KB script stays VERBATIM (safety rule).
+          ...(rcfg.emergencyHandling.trim() ? { emergencyHandling: rcfg.emergencyHandling.trim() } : {}),
+          ...(rcfg.escalationNotes.trim() ? { escalationNotes: rcfg.escalationNotes.trim() } : {}),
         },
       })
       .catch(() => undefined);
@@ -614,8 +650,10 @@ async function captureEmergencyLead(
   }
 }
 
-/** The AI lines spoken for an action (transcript mirror of actionToTwiML). */
-function aiLinesForAction(action: CallFlowAction): string[] {
+/** The AI lines spoken for an action (transcript mirror of actionToTwiML).
+ *  Exported for the P4-O test-call simulation, which renders the exact lines
+ *  the live path would speak — one source of truth for both. */
+export function aiLinesForAction(action: CallFlowAction): string[] {
   switch (action.kind) {
     case "gather":
       return [action.prompt];
@@ -638,9 +676,15 @@ async function finalizeCall(
   businessId: string,
   callId: string,
   turns: CallTranscriptTurn[],
+  rcfg: ReceptionistConfig,
 ): Promise<void> {
   try {
-    const summary = await args.store.summarizeCall({ businessId, transcript: turns });
+    // P4-O: the studio's free-form company instructions steer the summary.
+    const summary = await args.store.summarizeCall({
+      businessId,
+      transcript: turns,
+      ...(rcfg.instructions.trim() ? { instructions: rcfg.instructions.trim() } : {}),
+    });
     if (summary) {
       await args.store.updateCall(businessId, callId, { aiSummary: summary });
     }
@@ -792,6 +836,11 @@ export function neonVoiceCallStore(): VoiceCallStore {
         "You summarize a plumbing company's handled phone call for the owner.",
         "Return 1-3 plain sentences: what the caller needed, urgency, and the callback number if stated.",
         "Never invent details that were not said. No prices, no bookings, no promises.",
+        // P4-O: the owner's studio instructions steer what to emphasize. They
+        // extend the summary, never weaken the honesty guardrails above.
+        ...(args.instructions && args.instructions.trim()
+          ? ["The owner's standing instructions for summaries: " + args.instructions.trim()]
+          : []),
       ].join("\n");
       const raw = await llmComplete(system, dialogue, { maxTokens: 200, timeoutMs: 15_000, temperature: 0 });
       return raw.trim().slice(0, 600) || null;

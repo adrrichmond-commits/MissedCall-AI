@@ -2,11 +2,12 @@
  * Call-transfer rules for the AI voice receptionist (P3-E) — PURE module.
  *
  * Where the transfer number comes from (in precedence order):
- *   1. settings.transferNumber — the business's explicit transfer target
- *      (Phase 4 receptionist studio makes this editable; accepted today so
- *      the flow is provable end-to-end).
- *   2. businesses.phone — the shop's main line, normalized.
- *   3. null — no transfer is possible; every emergency/after-hours/human
+ *   1. settings.transferNumber — legacy top-level key (kept for backward
+ *      compatibility with blobs written before the receptionist studio).
+ *   2. settings.receptionist.transferNumber — the receptionist studio's
+ *      explicit transfer target (P4-O; the studio writes THIS key).
+ *   3. businesses.phone — the shop's main line, normalized.
+ *   4. null — no transfer is possible; every emergency/after-hours/human
  *      path falls to the voicemail wrapup instead (honest degradation, the
  *      caller is NEVER transferred to a number we cannot verify).
  *
@@ -63,9 +64,20 @@ export function resolveTransferRules(
     prefs.settings && typeof prefs.settings === "object"
       ? (prefs.settings as Record<string, unknown>)
       : {};
-  const explicit =
-    typeof source.transferNumber === "string" ? source.transferNumber : null;
-  const transferNumber = normalizeTransferNumber(explicit) ?? normalizeTransferNumber(prefs.businessPhone);
+  const receptionist =
+    source.receptionist && typeof source.receptionist === "object"
+      ? (source.receptionist as Record<string, unknown>)
+      : {};
+  const legacy =
+    typeof source.transferNumber === "string" && source.transferNumber.trim().length > 0
+      ? source.transferNumber
+      : null;
+  const studio =
+    typeof receptionist.transferNumber === "string" && receptionist.transferNumber.trim().length > 0
+      ? receptionist.transferNumber
+      : null;
+  const transferNumber =
+    normalizeTransferNumber(legacy) ?? normalizeTransferNumber(studio) ?? normalizeTransferNumber(prefs.businessPhone);
   const offersTransfer =
     transferNumber != null &&
     (trigger === "emergency" ||

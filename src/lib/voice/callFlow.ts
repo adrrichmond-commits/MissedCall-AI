@@ -37,6 +37,7 @@ import {
   type PipelineLlm,
   type PipelineHoursRow,
 } from "~/lib/server/classifyPipeline";
+import { matchFaq, type FaqPair } from "~/lib/voice/receptionistConfig";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,6 +118,19 @@ export interface CallFlowContext {
   llm: PipelineLlm | null;
   /** True when the business takes emergency calls after hours (prefs). */
   afterHoursEmergency: boolean;
+  /**
+   * P4-O receptionist studio: the business's FAQ pairs. When the caller asks
+   * something a FAQ answers (and the flow hasn't captured a need yet), the
+   * answer is spoken and the flow resumes — bounded by the same exchange cap.
+   * Absent/empty → no FAQ branch (every pre-studio behavior unchanged).
+   */
+  faqs?: FaqPair[];
+  /**
+   * P4-O: overrides the default confirm prompt when the business's
+   * never-promise policy forbids the default's "will reach out shortly"
+   * commitment. Undefined → PROMPTS.confirm, exactly as before.
+   */
+  confirmPrompt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +324,17 @@ export async function stepCallFlow(
         state: { ...next, stage: "callback_number" },
       };
     }
+    // P4-O FAQ branch: the caller asked a question the business configured an
+    // answer for (and this turn didn't capture a need) — answer it, then let
+    // the qualification resume. The exchange was already counted, so a
+    // question-only caller still hits the wrapup cap honestly.
+    const faq = ctx.faqs && ctx.faqs.length > 0 ? matchFaq(ctx.faqs, text) : null;
+    if (faq) {
+      return {
+        action: { kind: "speak_then_gather", preamble: [faq.answer], prompt: PROMPTS.need, stage: "need" },
+        state: next,
+      };
+    }
     return { action: { kind: "gather", prompt: PROMPTS.need, stage: "need" }, state: { ...next, stage: "need" } };
   }
 
@@ -321,10 +346,19 @@ export async function stepCallFlow(
         action: {
           kind: "speak_then_gather",
           preamble: ["Thanks — I'll pass that along."],
-          prompt: PROMPTS.confirm,
+          prompt: ctx.confirmPrompt ?? PROMPTS.confirm,
           stage: "confirm",
         },
         state: withPhone,
+      };
+    }
+    // The caller said something that isn't a number — answer a matching FAQ
+    // if there is one, then ask for the number again.
+    const faq = ctx.faqs && ctx.faqs.length > 0 ? matchFaq(ctx.faqs, text) : null;
+    if (faq) {
+      return {
+        action: { kind: "speak_then_gather", preamble: [faq.answer], prompt: PROMPTS.callbackNumber, stage: "callback_number" },
+        state: next,
       };
     }
     return {
