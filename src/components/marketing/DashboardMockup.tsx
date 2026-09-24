@@ -10,7 +10,7 @@ export function BrowserFrame({ children }: { children: ReactNode }) {
         <span className="h-3 w-3 rounded-full bg-amber-400" aria-hidden />
         <span className="h-3 w-3 rounded-full bg-emerald-400" aria-hidden />
         <div className="ml-3 flex h-6 flex-1 items-center rounded-md bg-white px-3 text-xs text-slate-400 ring-1 ring-inset ring-slate-200">
-          app.missedcall.ai/dashboard
+          /dashboard
         </div>
       </div>
       <div className="p-4 sm:p-6">{children}</div>
