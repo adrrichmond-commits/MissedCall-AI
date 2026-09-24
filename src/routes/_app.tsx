@@ -12,6 +12,23 @@ export const Route = createFileRoute("/_app")({
   beforeLoad: async (): Promise<{ user: CurrentUserView } | void> => {
     // Server-side session check. No valid session → redirect to /login
     // before anything renders. This is the protected-route gate.
+    //
+    // PR #27 (prod-only 500s): during SSR this must call the PLAIN
+    // currentSession() — a createServerFn call here compiles to an SSR RPC
+    // stub (HTTP self-call through the hosting proxy, intermittently 5xx).
+    // In the browser (client-side navigation) the RPC wrapper is correct.
+    // The client build dead-code-eliminates the SSR branch, so the
+    // server-only sessionReads module never reaches the bundle.
+    if (import.meta.env.SSR) {
+      const { currentSession } = await import("~/lib/server/sessionReads");
+      const ssrSession = await currentSession();
+      if (!ssrSession)
+        throw redirect({
+          to: "/login",
+          search: { next: undefined } as { next: string | undefined },
+        });
+      return { user: ssrSession };
+    }
     const session = await getSessionFn();
     if (!session)
       throw redirect({

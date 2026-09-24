@@ -11,6 +11,13 @@ import { Badge } from "~/components/ui/Badge";
 
 export const Route = createFileRoute("/admin/health")({
   loader: async () => {
+    // PR #27: plain read during SSR (no HTTP self-call); RPC in the browser.
+    if (import.meta.env.SSR) {
+      const { adminHealthPage } = await import("~/lib/server/adminReads");
+      const res = await adminHealthPage();
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    }
     const { adminHealthFn } = await import("~/lib/server/adminFns");
     const res = await adminHealthFn();
     if (!res.ok) throw new Error(res.error);

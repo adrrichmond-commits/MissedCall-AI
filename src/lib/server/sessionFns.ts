@@ -10,6 +10,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { AuthError } from "~/lib/server/auth";
 import { getSessionFromRequest, requireAuth, requireRole } from "~/lib/server/auth.server";
 import { countUsers } from "~/db/queries/auth";
+import { currentSession } from "~/lib/server/sessionReads";
 
 /** Client-safe trial state for the app-shell banner (Phase 2). */
 export interface TrialStatus {
@@ -35,22 +36,15 @@ export interface CurrentUserView {
   sessionExpiresAt: string;
 }
 
-/** Resolve the current session to a client-safe view (null when signed out). */
+/**
+ * Resolve the current session to a client-safe view (null when signed out).
+ * Delegates to the PLAIN currentSession() in ./sessionReads — route gates
+ * call the plain fn during SSR (no HTTP self-call); this wrapper stays for
+ * browser-initiated calls. Bodies were identical; now one source of truth.
+ */
 export const getSessionFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<CurrentUserView | null> => {
-    const ctx = await getSessionFromRequest();
-    if (!ctx) return null;
-    return {
-      userId: ctx.user.id,
-      email: ctx.user.email,
-      fullName: ctx.user.fullName,
-      role: ctx.role,
-      emailVerified: ctx.user.emailVerified,
-      businessId: ctx.business.id,
-      businessName: ctx.business.name,
-      businessPlan: ctx.business.plan,
-      sessionExpiresAt: ctx.session.expiresAt.toISOString(),
-    };
+    return currentSession();
   },
 );
 

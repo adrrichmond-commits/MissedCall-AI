@@ -56,6 +56,10 @@ function read(p: string): string {
 // 1. Gate — every admin surface funnels through requirePlatformAdmin
 // ---------------------------------------------------------------------------
 const adminFns = read("../src/lib/server/adminFns.ts");
+// PR #27: the SSR-executed read paths moved to plain functions in adminReads
+// (createServerFn wrappers in loaders compile to unreliable HTTP self-calls
+// in prod). The gate-before-query guarantees are checked against BOTH files.
+const adminReads = read("../src/lib/server/adminReads.ts");
 const adminRoutes = [
   "../src/routes/admin.tsx",
   "../src/routes/admin/accounts.tsx",
@@ -68,16 +72,22 @@ checkTrue(
   "gate: adminFns calls requirePlatformAdmin",
   /requirePlatformAdmin\(\)/.test(adminFns),
 );
+checkTrue(
+  "gate: adminReads calls requirePlatformAdmin",
+  /requirePlatformAdmin\(\)/.test(adminReads),
+);
+// Write actions remain gated inside their RPC wrappers in adminFns.
 for (const fn of [
-  "adminListAccountsFn",
-  "adminAccountDetailFn",
   "adminSetAccountDisabledFn",
   "adminOverridePlanFn",
   "adminImpersonateFn",
-  "adminAuditLogFn",
-  "adminHealthFn",
 ]) {
   const seg = adminFns.slice(adminFns.indexOf(`export const ${fn}`));
+  checkTrue(`gate: ${fn} gated first`, /await requirePlatformAdmin\(\)/.test(seg.slice(0, 900)));
+}
+// SSR read paths must gate first inside their plain functions in adminReads.
+for (const fn of ["adminAccountsPage", "adminAccountDetailPage", "adminAuditPage", "adminHealthPage"]) {
+  const seg = adminReads.slice(adminReads.indexOf(`export async function ${fn}`));
   checkTrue(`gate: ${fn} gated first`, /await requirePlatformAdmin\(\)/.test(seg.slice(0, 900)));
 }
 // The /admin layout gate: signed-out → login redirect; non-admin → 404.
@@ -203,9 +213,9 @@ checkTrue(
   "isolation: business-scoped revenue query unchanged (WHERE business_id)",
   /WHERE business_id = \$\{businessId\}/.test(read("../src/db/queries/revenue.ts")),
 );
-const listAccountsFn = adminFns.slice(adminFns.indexOf("export const adminListAccountsFn"), adminFns.indexOf("export interface AdminAccountDetailView"));
+const listAccountsFn = adminReads.slice(adminReads.indexOf("export async function adminAccountsPage"), adminReads.indexOf("export interface AdminAccountDetailView"));
 checkTrue("isolation: accounts fn gated before its query", listAccountsFn.indexOf("requirePlatformAdmin()") < listAccountsFn.indexOf("listAdminAccounts("));
-const detailFn = adminFns.slice(adminFns.indexOf("export const adminAccountDetailFn"), adminFns.indexOf("// ---------------------------------------------------------------------------\n// Privileged write actions"));
+const detailFn = adminReads.slice(adminReads.indexOf("export async function adminAccountDetailPage"), adminReads.indexOf("// ---------------------------------------------------------------------------\n// Audit log page"));
 checkTrue("isolation: detail fn gated before its query", detailFn.indexOf("requirePlatformAdmin()") < detailFn.indexOf("getAdminAccountDetail("));
 checkTrue("isolation: uuid-shaped businessId validated in fns", /\[0-9a-f-\]\{36\}/.test(adminFns));
 
@@ -234,7 +244,7 @@ check(
 );
 checkTrue(
   "funnel: aggregate uses the same stage labels",
-  adminFns.includes('"Calls received"') && adminFns.includes('"Jobs won"'),
+  adminReads.includes('"Calls received"') && adminReads.includes('"Jobs won"'),
 );
 
 // 10. Pricing single-source still intact (no price literals in admin code)

@@ -21,24 +21,53 @@ import {
 
 export const Route = createFileRoute("/admin")({
   beforeLoad: async () => {
-    const gate = await platformAdminGateFn();
-    if (gate.ok) return;
-    if (gate.kind === "unauthenticated") {
-      throw redirect({ to: "/login", search: { next: "/admin" } });
+    // PR #27 (prod-only 500s): during SSR the gate must run as a PLAIN
+    // function — a createServerFn call here compiles to an SSR RPC stub
+    // (HTTP self-call through the hosting proxy, intermittently 5xx). In
+    // the browser (client-side navigation) the RPC wrapper is correct. The
+    // client build dead-code-eliminates the SSR branch (import-protection).
+    if (import.meta.env.SSR) {
+      const { adminGate } = await import("~/lib/server/adminReads");
+      handleGateOutcome(await adminGate());
+      return;
     }
-    // Signed in but not the platform admin (or gate closed): 404.
-    throw notFound();
+    const gate = await platformAdminGateFn();
+    handleGateOutcome(gate);
   },
   loader: async () => {
+    // Same SSR rule as the gate: plain read during SSR, RPC in the browser.
+    if (import.meta.env.SSR) {
+      const { adminImpersonationState } = await import("~/lib/server/adminReads");
+      return toBannerState(await adminImpersonationState());
+    }
     const imp = await getImpersonationStateFn();
-    return {
-      active: imp.active,
-      viewedBusinessName: imp.viewedBusinessName,
-      adminEmail: imp.adminEmail,
-    };
+    return toBannerState(imp);
   },
   component: AdminLayout,
 });
+
+type GateOutcome = Awaited<ReturnType<typeof platformAdminGateFn>>;
+
+function handleGateOutcome(gate: GateOutcome): void {
+  if (gate.ok) return;
+  if (gate.kind === "unauthenticated") {
+    throw redirect({ to: "/login", search: { next: "/admin" } });
+  }
+  // Signed in but not the platform admin (or gate closed): 404.
+  throw notFound();
+}
+
+function toBannerState(imp: {
+  active: boolean;
+  viewedBusinessName: string | null;
+  adminEmail: string | null;
+}): { active: boolean; viewedBusinessName: string | null; adminEmail: string | null } {
+  return {
+    active: imp.active,
+    viewedBusinessName: imp.viewedBusinessName,
+    adminEmail: imp.adminEmail,
+  };
+}
 
 function AdminLayout() {
   const imp = Route.useLoaderData() as {

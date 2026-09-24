@@ -13,8 +13,15 @@ export const Route = createFileRoute("/admin/audit")({
     action: typeof search.action === "string" ? search.action : "",
     page: Number(search.page ?? 1) || 1,
   }),
-  loaderDeps: ({ search }) => [search.action, search.page],
+  loaderDeps: ({ search }): [string | undefined, number | undefined] => [search.action, search.page],
   loader: async ({ deps }) => {
+    // PR #27: plain read during SSR (no HTTP self-call); RPC in the browser.
+    if (import.meta.env.SSR) {
+      const { adminAuditPage } = await import("~/lib/server/adminReads");
+      const res = await adminAuditPage({ action: deps[0] || undefined, page: deps[1] ?? 1 });
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    }
     const res = await adminAuditLogFn({ data: { action: deps[0] || undefined, page: deps[1] ?? 1 } });
     if (!res.ok) throw new Error(res.error);
     return res.data;
