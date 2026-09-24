@@ -14,6 +14,7 @@ import {
   requireAuth,
 } from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
+import { providerStatusView } from "~/lib/server/providerStatus";
 import { receptionistConfigFromSettings, resolveReceptionistGreeting } from "~/lib/voice/receptionistConfig";
 import * as q from "~/db/queries";
 import type { Business } from "~/db/schema";
@@ -308,6 +309,9 @@ export const getSettingsFn = createServerFn({ method: "GET" }).handler(async ():
           receptionistConfigFromSettings((b as unknown as { settings?: unknown }).settings),
           b.name || null,
         ),
+        // P4 audit: which provider transports are actually wired here — the
+        // UI status lines render from this instead of guessing.
+        providerStatus: providerStatusView(),
         onboarding: onboardingState(b, done),
       },
     };

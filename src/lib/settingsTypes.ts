@@ -142,6 +142,24 @@ export interface SettingsServiceAreaView {
   state: string | null;
 }
 
+/**
+ * Which provider transports are actually wired in this environment, resolved
+ * server-side from process.env (P4 provider-status audit). Client status lines
+ * render from this instead of claiming things they cannot know.
+ */
+export interface ProviderStatusView {
+  /** Email transport in effect: "knock" (primary), "resend-style" (fallback), null = not configured. */
+  emailTransport: "knock" | "resend-style" | null;
+  /** Knock workflow key when emailTransport === "knock". */
+  emailWorkflowKey: string | null;
+  /** SMS provider env present (real customer texting still gated on A2P approval). */
+  smsConfigured: boolean;
+  /** The provisioned texting number from the SMS provider, when set. */
+  smsNumber: string | null;
+  /** LLM env present (AI classification + receptionist language tiers). */
+  llmConfigured: boolean;
+}
+
 export interface SettingsView {
   role: "owner" | "manager" | "employee";
   canEdit: boolean;
@@ -161,5 +179,7 @@ export interface SettingsView {
    * step 4 can never drift from the live voice path.
    */
   receptionistGreeting: string;
+  /** P4 audit: which provider transports are actually wired in this environment. */
+  providerStatus: ProviderStatusView;
   onboarding: OnboardingState;
 }

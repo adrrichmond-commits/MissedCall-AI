@@ -99,9 +99,21 @@ const NOTIFICATION_PREF_KEYS = [
   { key: "weeklySummaryEmail", label: "Send a weekly summary email" },
 ] as const;
 
-/** Honest note: prefs save now, delivery waits for the messaging provider. */
-const PREFS_DELIVERY_NOTE =
-  "Your choices are saved now. Email/SMS delivery switches on when the messaging provider is connected — nothing is sent until then.";
+/**
+ * P4 provider-status audit: the delivery note is now built from the
+ * server-resolved provider status instead of a static guess, so it always
+ * states what is actually wired (email via Knock, SMS gated on A2P) and
+ * never claims a provider that is not configured.
+ */
+function prefsDeliveryNote(status: SettingsView["providerStatus"]): string {
+  const email = status.emailTransport !== null
+    ? "Email alerts (new leads, appointment requests, payment failures) are on — they deliver through your MissedCall AI email channel."
+    : "Email alerts switch on when the email provider is connected.";
+  const sms = status.smsConfigured
+    ? "SMS texts switch on once carrier campaign approval (A2P) comes through."
+    : "SMS texts switch on when the texting provider is connected.";
+  return "Your choices are saved now. " + email + " " + sms + " Nothing is sent until each channel is live.";
+}
 
 const TIME_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
 
@@ -804,7 +816,12 @@ function HoursEmergStep({
           </div>
         </fieldset>
         <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
-          Saved now. Emergency email/SMS delivery switches on when the messaging provider is connected — nothing is sent until then.
+          Saved now. Emergency email alerts deliver through your MissedCall AI email channel
+          {view.providerStatus.emailTransport !== null ? " (connected)" : " once the email provider is connected"}; emergency SMS texts
+          {view.providerStatus.smsConfigured
+            ? " start once carrier campaign approval (A2P) comes through"
+            : " switch on when the texting provider is connected"}
+          — nothing is sent until each channel is live.
         </p>
       </div>
 
@@ -891,20 +908,26 @@ function HowItWorksStep({
         </div>
       </div>
 
-      {/* Honest provider status (the old "Phone number" + "Test the AI" steps) */}
+      {/* Honest provider status (the old "Phone number" + "Test the AI" steps) —
+          every line resolves from the server-side provider status, never a guess. */}
       <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
         <div className="px-4 py-3">
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Your texting number</dt>
           <dd className="mt-0.5 text-sm text-slate-700">
-            Assigned automatically once the messaging provider is connected — your main line stays
-            free. Main line on file: <span className="font-semibold">{view.business.phone || "add one in Your business"}</span>
+            {view.providerStatus.smsConfigured
+              ? "Provisioned texting line: " +
+                view.providerStatus.smsNumber +
+                " — real customer texting starts once carrier campaign approval (A2P) comes through. Your main line stays free."
+              : "Assigned automatically once the texting provider is connected — your main line stays free."}{" "}
+            Main line on file: <span className="font-semibold">{view.business.phone || "add one in Your business"}</span>
           </dd>
         </div>
         <div className="px-4 py-3">
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Test calls</dt>
           <dd className="mt-0.5 text-sm text-slate-700">
-            Open up once the AI receptionist is live — you'll be able to hear it before your
-            customers do (from Settings, anytime).
+            Available now — run a simulated test call in the AI Receptionist studio (Settings) and hear exactly
+            what a caller hears. Live answering switches on when the phone line is connected
+            {view.providerStatus.llmConfigured ? " and the AI is already understanding callers." : " (AI language setup pending)."}
           </dd>
         </div>
       </dl>
@@ -931,7 +954,7 @@ function HowItWorksStep({
           </ul>
         </fieldset>
         <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
-          {PREFS_DELIVERY_NOTE}
+          {prefsDeliveryNote(view.providerStatus)}
         </p>
       </div>
 

@@ -14,8 +14,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
+import { providerStatusView } from "~/lib/server/providerStatus";
 import * as q from "~/db/queries";
 import type { AppResult } from "~/lib/server/appFns";
+import type { ProviderStatusView } from "~/lib/settingsTypes";
 
 export interface NotificationView {
   id: string;
@@ -35,6 +37,8 @@ export interface NotificationView {
 export interface NotificationsData {
   unreadCount: number;
   notifications: NotificationView[];
+  /** P4 audit: which transports are actually wired, resolved server-side. */
+  providerStatus: ProviderStatusView;
 }
 
 export const getNotificationsFn = createServerFn({ method: "GET" }).handler(
@@ -57,6 +61,7 @@ export const getNotificationsFn = createServerFn({ method: "GET" }).handler(
             readAt: n.readAt ? n.readAt.toISOString() : null,
             createdAt: n.createdAt.toISOString(),
           })),
+          providerStatus: providerStatusView(),
         },
       };
     } catch (e) {

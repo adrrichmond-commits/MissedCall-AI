@@ -47,8 +47,9 @@ function WelcomePanel() {
             caller gets a text-back, the AI captures what they need, and the lead shows up here.
           </p>
           <p className="mt-2 max-w-prose text-xs leading-relaxed text-green-800">
-            Texts and calls switch on automatically once the messaging provider is connected —
-            your setup and data are ready now. Tune everything anytime in Settings.
+            Email alerts deliver through your MissedCall AI email channel; real customer texting
+            starts once carrier campaign approval (A2P) comes through. Your setup and data are
+            ready now. Tune everything anytime in Settings.
           </p>
         </div>
         <button

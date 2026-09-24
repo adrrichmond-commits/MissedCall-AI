@@ -4,6 +4,7 @@ import {
   markAllNotificationsReadFn,
   markNotificationReadFn,
   type NotificationView,
+  type NotificationsData,
 } from "~/lib/server/notificationFns";
 import { formatRelative } from "~/lib/format";
 
@@ -60,6 +61,7 @@ export function NotificationBell({ pathname }: { pathname: string }) {
   const [unread, setUnread] = useState(0);
   const [items, setItems] = useState<NotificationView[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [providerStatus, setProviderStatus] = useState<NotificationsData["providerStatus"] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -69,6 +71,7 @@ export function NotificationBell({ pathname }: { pathname: string }) {
       if (res.ok) {
         setUnread(res.data.unreadCount);
         setItems(res.data.notifications);
+        setProviderStatus(res.data.providerStatus);
         setLoaded(true);
       }
     } catch {
@@ -247,8 +250,17 @@ export function NotificationBell({ pathname }: { pathname: string }) {
       </div>
       <div className="border-t border-slate-100 bg-slate-50 px-4 py-2.5">
         <p className="text-xs text-slate-500">
-          In-app notifications are live. Email delivery activates when EMAIL_API_KEY is set (new
-          leads, appointment requests, and payment failures email the owner); SMS remains pending provider setup.
+          {providerStatus
+            ? providerStatus.emailTransport !== null
+              ? "In-app notifications are live. Email delivery is active through your MissedCall AI email channel (new leads, appointment requests, and payment failures email the owner)" +
+                (providerStatus.smsConfigured
+                  ? "; real SMS is pending carrier campaign approval (A2P)."
+                  : "; SMS is pending texting-provider setup.")
+              : "In-app notifications are live. Email delivery activates when the email provider is set (new leads, appointment requests, and payment failures email the owner)" +
+                (providerStatus.smsConfigured
+                  ? "; real SMS is pending carrier campaign approval (A2P)."
+                  : "; SMS is pending texting-provider setup.")
+            : "In-app notifications are live. Email and SMS delivery switch on when the providers are connected."}
         </p>
       </div>
     </div>
