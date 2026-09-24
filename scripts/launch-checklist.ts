@@ -21,6 +21,7 @@
  * scripts/verify-deploy.ts (--serve + smoke is that, plus probes).
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 type Status = "PASS" | "FAIL" | "WARN" | "SKIP";
 interface Row {
   area: string;
@@ -133,7 +134,6 @@ function readIfExists(path: string): string {
   }
 }
 async function runServeChecks(): Promise<void> {
-  const { spawn } = await import("node:child_process");
   const PORT = 3312;
   const BASE = "http://127.0.0.1:" + String(PORT);
   if (!existsSync(ROOT + "dist/server/server.js")) {
@@ -156,8 +156,8 @@ async function runServeChecks(): Promise<void> {
       row("Runtime", "GET " + path + " renders (2xx/3xx)", (res.status >= 200 && res.status < 400) ? "PASS" : "FAIL", "status " + String(res.status));
     }
     if (SMOKE) {
-      const smoke = Bun.spawnSync(["bun", "scripts/test-smoke.ts", BASE], { stdout: "inherit", stderr: "inherit" });
-      row("Runtime", "Smoke suite (signup/trial/login/dashboard) passes", smoke.exitCode === 0 ? "PASS" : "FAIL", "exit " + String(smoke.exitCode));
+      const smoke = spawnSync("bun", ["scripts/test-smoke.ts", BASE], { stdio: "inherit", env: process.env });
+      row("Runtime", "Smoke suite (signup/trial/login/dashboard) passes", smoke.status === 0 ? "PASS" : "FAIL", "exit " + String(smoke.status));
     } else {
       row("Runtime", "Signup + trial flow works end-to-end", "SKIP", "add --smoke to run the full suite here");
     }

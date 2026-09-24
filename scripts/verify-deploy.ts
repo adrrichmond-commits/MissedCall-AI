@@ -20,6 +20,7 @@
  * remains the deploy mechanism (working site → live site); this script
  * proves the artifact we are about to publish serves end-to-end.
  */
+import { spawn, spawnSync } from "node:child_process";
 const PORT = Number(process.argv[2] ?? process.env.PORT ?? 3311);
 const BASE = "http://127.0.0.1:" + String(PORT);
 let failures = 0;
@@ -50,9 +51,8 @@ const artifact = await Bun.file(serverPath).exists();
 check("prod build artifact (dist/server/server.js)", artifact, artifact ? "" : "run `bun run build` first");
 if (!artifact) process.exit(1);
 // 2. Boot the prod build (prod-serve patches the DB driver config first).
-const proc = Bun.spawn(["bun", "scripts/prod-serve.ts", String(PORT)], {
-  stdout: "inherit",
-  stderr: "inherit",
+const proc = spawn("bun", ["scripts/prod-serve.ts", String(PORT)], {
+  stdio: "inherit",
   env: process.env,
 });
 try {
@@ -76,8 +76,8 @@ try {
   if (process.env.SKIP_SMOKE === "1") {
     console.log("SKIP smoke (SKIP_SMOKE=1)");
   } else {
-    const smoke = Bun.spawnSync(["bun", "scripts/test-smoke.ts", BASE], { stdout: "inherit", stderr: "inherit" });
-    check("smoke suite (21 checks) against prod build", smoke.exitCode === 0, "exit " + String(smoke.exitCode));
+    const smoke = spawnSync("bun", ["scripts/test-smoke.ts", BASE], { stdio: "inherit", env: process.env });
+    check("smoke suite (21 checks) against prod build", smoke.status === 0, "exit " + String(smoke.status));
   }
 } catch (err) {
   failures++;
