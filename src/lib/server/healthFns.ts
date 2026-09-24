@@ -1,67 +1,32 @@
 /**
- * Health-check server functions (Phase 3 reliability pass).
+ * Health-check server function (Phase 3 reliability pass).
+ *
+ * The actual probe lives in ./healthProbe.ts as a PLAIN function —
+ * `runHealthProbe()` — and is the function the /healthz and /api/healthz
+ * route handlers call directly (see that file for the prod-500 postmortem:
+ * in the production build a createServerFn call inside a route handler
+ * becomes an HTTP self-call to /_serverFn/<id> and 500s).
+ *
+ * `healthCheckFn` remains exported as the browser-callable RPC form of the
+ * same probe for API stability (nothing in the product currently calls it
+ * over RPC); its handler simply delegates to the plain probe, so the wire
+ * contract is identical wherever it is used.
  *
  * IMPORT-PROTECTION PATTERN (same discipline as P3-G's adminFns/admin split):
- * route modules may only import createServerFn modules, so every export here
- * is a `createServerFn` (or a pure type). The DB probe lives in this server
- * module; /healthz (src/routes/healthz.ts) is a thin RPC shim over
- * `healthCheckFn` and never imports the query layer directly.
- *
- * Honesty rules:
- *   - db=true ONLY after a real `SELECT 1` round trip against the database.
- *   - Any failure (connect error, timeout) → db:false / ok:false; the error
- *     itself is swallowed — the response never carries connection strings,
- *     driver messages, or stack traces. The server log keeps the detail.
- *   - The probe is time-boxed (2.5s) so a hung database can't hang monitors.
+ * route modules may only import createServerFn modules from this file; the
+ * route handlers import the plain probe from ./healthProbe directly instead.
  */
 import { createServerFn } from "@tanstack/react-start";
-import { sql } from "~/db/queries/shared";
+import { runHealthProbe } from "./healthProbe";
+import type { HealthReport } from "./healthProbe";
 
-/** Client-safe health payload — no error detail by design. */
-export interface HealthReport {
-  ok: boolean;
-  db: boolean;
-  uptimeSec: number;
-  timestamp: string;
-}
-
-/** Hard ceiling on the DB probe so /healthz always answers promptly. */
-const DB_PROBE_TIMEOUT_MS = 2500;
+export type { HealthReport };
 
 /**
- * Liveness + DB readiness. Unauthenticated by design: monitors, load
- * balancers, and uptime checks must be able to call it with no session and
- * no cookie. Answers in one small query round trip.
+ * RPC wrapper around runHealthProbe — for browser callers only. Route
+ * handlers must NOT call this (see ./healthProbe.ts header). Unauthenticated
+ * by design: monitors may call it with no session and no cookie.
  */
 export const healthCheckFn = createServerFn({ method: "GET" }).handler(
-  async (): Promise<HealthReport> => {
-    const report = (db: boolean): HealthReport => ({
-      ok: db,
-      db,
-      uptimeSec: Math.floor(process.uptime()),
-      timestamp: new Date().toISOString(),
-    });
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const probe = sql().query("SELECT 1");
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("db probe timed out")),
-          DB_PROBE_TIMEOUT_MS,
-        );
-      });
-      await Promise.race([probe, timeout]);
-      return report(true);
-    } catch (e) {
-      // Detail to the server log only — the public payload stays opaque.
-      console.error(
-        "[healthz] db probe failed:",
-        e instanceof Error ? e.message : e,
-      );
-      return report(false);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  },
+  async (): Promise<HealthReport> => runHealthProbe(),
 );

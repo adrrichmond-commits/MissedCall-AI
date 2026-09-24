@@ -25,15 +25,21 @@
  *   7. loginFn (RPC)           → the seeded demo account (Dana Whitfield) + session cookie
  *   8. Dana's dashboard        → 200 and her name renders
  *
- * Wire format notes (verified against a captured browser request):
+ * Wire format notes (verified against a captured browser request AND against
+ * the shipped prod bundle):
  *   - TanStack Start server-fn RPCs are POST /_serverFn/<fn id> with a
  *     seroval/crossJSON body {"t":{obj},"f":63,"m":[]}. The encoders below
  *     build that shape for flat string payloads.
- *   - The fn id differs by build mode: the DEV compiler base64url-encodes
- *     JSON {file, export}; the PROD compiler uses
- *     sha256("<root-relative file>--<export name>") (see generateFunctionId
- *     in @tanstack/start-plugin-core start-compiler). The suite tries the
- *     prod id first and falls back to the dev id, so it works everywhere.
+ *   - The fn id differs by build mode. DEV: base64url-encoded JSON
+ *     {file, export} where file is the module id WITH the
+ *     "?tss-serverfn-split" query. PROD: sha256 over
+ *     "<path.relative(root, module) WITHOUT the query>--<export name>" —
+ *     @tanstack/start-plugin-core handleCreateServerFn strips the split
+ *     query before hashing (`path.relative(context.root, baseFilename)`),
+ *     so including the query here 500s on every prod build. Verified
+ *     against the shipped bundle: sha256("src/lib/server/authFns.ts--…")…
+ *     appears verbatim in the client chunk; the with-query hash does not.
+ *     The suite tries the prod id first and falls back to the dev id.
  *   - The production hosting proxy only forwards browser-like requests, so
  *     the suite sends the headers every real browser sends: Origin, Referer,
  *     and Sec-Fetch-Site. Without them the proxy 403s the RPC before the app.
@@ -73,13 +79,19 @@ function obj(i: number, keys: string[], values: unknown[]): unknown {
 function rpcBody(keys: string[], values: string[]): string {
   return JSON.stringify({ t: obj(0, ["data"], [obj(1, keys, values.map(s))]), f: 63, m: [] });
 }
-/** PROD compiler id: sha256("<root-relative file>--<export name>") hex. */
+/**
+ * PROD compiler id: sha256("<root-relative path>--<export name>") hex where
+ * the path is the module id WITHOUT the "?tss-serverfn-split" query and
+ * without a leading slash (matches handleCreateServerFn's
+ * `path.relative(root, baseFilename)`).
+ */
 function prodFnId(file: string, exportName: string): string {
+  const relPath = file.split("?")[0].replace(/^\//, "");
   return createHash("sha256")
-    .update(`${file.replace(/^\//, "")}--${exportName}`)
+    .update(`${relPath}--${exportName}`)
     .digest("hex");
 }
-/** DEV compiler id: base64url of JSON {file, export}. */
+/** DEV compiler id: base64url of JSON {file, export} (file keeps the query). */
 function devFnId(file: string, exportName: string): string {
   return Buffer.from(JSON.stringify({ file, export: exportName }))
     .toString("base64")
