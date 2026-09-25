@@ -29,6 +29,8 @@ import {
   funnelStages,
   type FunnelCounts,
 } from "~/lib/server/revenue";
+import { buildRoiPanelData } from "~/lib/server/roiPanel";
+import type { RoiPanelData } from "~/lib/server/roi";
 import type { LeadStatus } from "~/db/schema";
 
 const LEAD_STATUSES = LEAD_LIFECYCLE_STATUSES;
@@ -115,6 +117,13 @@ export interface DashboardData {
     /** True when nothing has been won yet — drives the card's empty state. */
     hasRecovered: boolean;
   };
+  /**
+   * P5-2: the ROI panel — measured activity counts, estimated jobs/revenue/
+   * ROI (visually labeled "estimate" in the UI via estimateFlags), and the
+   * subscription cost resolved from src/lib/pricing.ts. Built by the plain
+   * server module roiPanel.ts (SSR-safe, P5-1 pattern).
+   */
+  roi: RoiPanelData;
   /** P3-C: open follow-up tasks — the callback queue (count + first rows). */
   followUps: FollowUpsData;
   recentLeads: {
@@ -166,7 +175,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
           })),
         };
       })();
-      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments, revenue, recoveryStats] =
+      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments, revenue, recoveryStats, roi] =
         await Promise.all([
           q.countLeadsCreatedSince(businessId, weekAgo),
           q.countConversationsByStatus(businessId),
@@ -179,6 +188,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
           q.listAppointments(businessId, {}, { limit: 5, order: "asc" }),
           q.revenueMetrics(businessId, ctx.business.timezone),
           q.missedCallRecoveryStats(businessId),
+          buildRoiPanelData(businessId),
         ]);
       const withConv = await q.leadIdsWithConversations(businessId, recentLeads.map((l) => l.id));
       // P4-V: trial state for the value indicator. Same expiry math as
@@ -222,6 +232,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
             appointmentsPerRecoveredLead: revenue.appointmentsPerRecoveredLead,
             hasRecovered: revenue.allTime.recoveredCents > 0 || revenue.allTime.wonLeads > 0,
           },
+          roi,
           followUps: followUpsRes,
           recentLeads: recentLeads.map((l) => ({
             id: l.id,
@@ -1044,6 +1055,11 @@ export interface AnalyticsData {
   revenue: DashboardData["revenue"];
   /** P3-D: ordered captured-calls funnel stages. */
   funnel: { key: string; label: string; count: number }[];
+  /**
+   * P5-2: the ROI panel payload (same builder as the dashboard) — estimated
+   * jobs/revenue/ROI with estimate labels + pricing-config subscription cost.
+   */
+  roi: RoiPanelData;
 }
 
 export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
@@ -1062,9 +1078,10 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
           q.missedCallRecoveryStats(businessId),
         ]);
       const totalLeads = Object.values(leadsByStatus).reduce((a, b) => a + b, 0);
-      const [revenue, funnel] = await Promise.all([
+      const [revenue, funnel, roi] = await Promise.all([
         q.revenueMetrics(businessId, ctx.business.timezone),
         q.revenueFunnelCounts(businessId),
+        buildRoiPanelData(businessId),
       ]);
       return {
         ok: true,
@@ -1088,6 +1105,7 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
             hasRecovered: revenue.allTime.recoveredCents > 0 || revenue.allTime.wonLeads > 0,
           },
           funnel: funnelStages(funnel),
+          roi,
         },
       };
     } catch (e) {
@@ -1135,6 +1153,28 @@ export const getRevenueFunnelFn = createServerFn({ method: "GET" }).handler(
 function funnelStagesFor(funnel: FunnelCounts): { key: string; label: string; count: number }[] {
   return funnelStages(funnel);
 }
+
+// ---------------------------------------------------------------------------
+// P5-2: the ROI panel — "is MissedCall AI paying for itself?"
+// ---------------------------------------------------------------------------
+
+/**
+ * The full ROI panel payload (measured counts + estimated jobs/revenue/ROI +
+ * pricing-config subscription cost). Delegates to the plain server module
+ * roiPanel.ts — SSR loaders call buildRoiPanelData directly; this RPC wrapper
+ * serves browser-initiated refreshes and keeps one body (no drift).
+ */
+export const getRoiPanelFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<AppResult<RoiPanelData>> => {
+    try {
+      const ctx = await requireAuth();
+      const data = await buildRoiPanelData(ctx.business.id);
+      return { ok: true, data };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // P4-A: customer feedback + AI-quality review queue

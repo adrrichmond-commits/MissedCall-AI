@@ -12,6 +12,8 @@ import {
 } from "~/components/app/pageStates";
 import { formatDateTime, formatMoney, formatRelative } from "~/lib/format";
 import { trialValueView, type TrialValueView } from "~/lib/trialValue";
+import type { RoiPanelData } from "~/lib/server/roi";
+import { PLANS } from "~/lib/pricing";
 
 export const Route = createFileRoute("/_app/dashboard")({
   // ?welcome=done — set by the onboarding finish step; renders the one-time
@@ -144,6 +146,12 @@ function DashboardPage() {
       {/* Priority 5: revenue — the "is this paying for itself" card */}
       <div className="mt-4">
         <RevenueCard revenue={data.revenue} />
+      </div>
+
+      {/* Priority 5b (P5-2): the ROI panel — what MissedCall AI recovered,
+          measured counts + clearly-labeled estimates + subscription cost. */}
+      <div className="mt-4">
+        <RoiPanel roi={data.roi} />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
@@ -433,6 +441,149 @@ function RevenueCard({ revenue }: { revenue: RevenueCardData }) {
           </dd>
         </div>
       </dl>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P5-2: Revenue & ROI panel — "is MissedCall AI paying for itself?"
+// ---------------------------------------------------------------------------
+
+/**
+ * The visible "Estimate" chip — the honest-labeling contract made visible.
+ * Rendered ONLY on derived figures (jobs won, revenue recovered, ROI); the
+ * measured counts never carry it. The flags arrive from the server engine
+ * (roi.ts estimateFlags) so the labeling cannot drift from the data.
+ */
+function EstimateChip({ title }: { title: string }) {
+  return (
+    <span
+      data-testid="roi-estimate-chip"
+      title={title}
+      className="ml-1.5 inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 align-middle text-[10px] font-semibold uppercase tracking-wide text-amber-700 ring-1 ring-inset ring-amber-600/20"
+    >
+      Estimate
+    </span>
+  );
+}
+
+function roiX(multiple: number | null): string {
+  return multiple == null ? "—" : `${multiple}×`;
+}
+
+/**
+ * The full ROI panel: measured funnel counts on top (live account data,
+ * never estimated), the derived money figures beneath — every one visibly
+ * labeled "Estimate" — and the subscription cost resolved from the one
+ * pricing config (src/lib/pricing.ts). Trial businesses see their trial
+ * state and what conversion means for billing; converted businesses see the
+ * trial-to-paid conversion recorded.
+ */
+function RoiPanel({ roi }: { roi: RoiPanelData }) {
+  const m = roi.measured;
+  const est = roi.estimated;
+  const billing = roi.billing;
+  const cheapestPlanCents = Math.min(...PLANS.map((p) => p.priceCents));
+
+  const measuredTiles = [
+    { label: "Calls received", value: m.callsReceived, hint: "Calls captured - all missed calls until live voice answering is on" },
+    { label: "Missed calls", value: m.missedCalls, hint: "Calls that rang out and were captured as leads" },
+    { label: "Auto-responded", value: m.autoResponded, hint: "Missed calls your AI text-back handled" },
+    { label: "Customer replies", value: m.customerReplies, hint: "Conversations where the customer texted back" },
+    { label: "Leads recovered", value: m.leadsRecovered, hint: "Missed callers the AI engaged into a conversation" },
+    { label: "Appointments booked", value: m.appointmentsBooked, hint: "Leads with at least one booked appointment" },
+  ];
+
+  return (
+    <section
+      data-testid="roi-panel"
+      aria-label="Return on investment"
+      className="rounded-xl border border-slate-200 bg-white p-5"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-slate-900">Return on investment</h2>
+        <a href="/analytics" className="text-xs font-semibold text-brand-700 hover:text-brand-800">
+          Full analytics
+        </a>
+      </div>
+      <p className="mt-0.5 text-xs text-slate-500">
+        Counts below are measured from your account's live data. Money figures are{" "}
+        <span className="font-semibold text-amber-700">estimates</span> until verified by real jobs.
+      </p>
+
+      {/* Measured activity — real rows, never estimated */}
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        {measuredTiles.map((t) => (
+          <div key={t.label} className="rounded-lg bg-slate-50 px-3 py-2.5" title={t.hint}>
+            <p className="text-[11px] font-medium leading-tight text-slate-500">{t.label}</p>
+            <p className="mt-0.5 text-xl font-bold text-slate-900">{t.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Derived money figures — every one labeled "Estimate" */}
+      {roi.hasActivity ? (
+        <div className="mt-3 grid gap-3 sm:grid-cols-4">
+          <div className="rounded-lg bg-brand-50 px-4 py-3 ring-1 ring-brand-100">
+            <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+              Jobs won
+              {roi.estimateFlags.jobsWon ? <EstimateChip title="Won leads valued at your invoice, quote, or the typical range for the job" /> : null}
+            </p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{est.jobsWon}</p>
+            <p className="text-xs text-slate-500">leads marked won, all time</p>
+          </div>
+          <div className="rounded-lg bg-brand-50 px-4 py-3 ring-1 ring-brand-100">
+            <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+              Revenue recovered
+              {roi.estimateFlags.revenueRecovered ? <EstimateChip title="Valued at the invoice you entered, otherwise your quote, otherwise the typical range for the job" /> : null}
+            </p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{formatMoney(est.revenueRecoveredCents)}</p>
+            <p className="text-xs text-slate-500">all time · {formatMoney(est.revenueRecoveredMonthCents)} this month</p>
+          </div>
+          <div className="rounded-lg bg-brand-50 px-4 py-3 ring-1 ring-brand-100">
+            <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+              ROI this month
+              {roi.estimateFlags.roiMultiple ? <EstimateChip title="Estimated revenue recovered this month divided by your monthly subscription cost" /> : null}
+            </p>
+            <p
+              className="mt-1 text-2xl font-bold text-slate-900"
+              title={billing.monthlyCostCents > 0 ? "Estimated revenue recovered this month ÷ monthly subscription cost" : "Free trial — no billing yet"}
+            >
+              {roiX(est.roiMultiple)}
+            </p>
+            <p className="text-xs text-slate-500">
+              {billing.monthlyCostCents > 0
+                ? `${formatMoney(est.revenueRecoveredMonthCents)} ÷ ${formatMoney(billing.monthlyCostCents)}/mo`
+                : "free trial — no billing yet"}
+            </p>
+          </div>
+          <div className="rounded-lg bg-slate-50 px-4 py-3 ring-1 ring-slate-100">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Subscription</p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">
+              {formatMoney(billing.monthlyCostCents)}
+              <span className="text-sm font-medium text-slate-500">/mo</span>
+            </p>
+            <p className="text-xs text-slate-500">{billing.planName} plan</p>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+          Nothing recovered yet — your first captured call starts the funnel, and estimated
+          revenue appears after your first won job.
+        </p>
+      )}
+
+      {/* Billing line — trial state and trial-to-paid conversion */}
+      <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500" data-testid="roi-billing-line">
+        {billing.onTrial
+          ? `Free trial · ${billing.trialDaysRemaining ?? 0} day${billing.trialDaysRemaining === 1 ? "" : "s"} left · after the trial, plans start at ${formatMoney(cheapestPlanCents)}/mo.`
+          : billing.trialToPaidConverted
+            ? `Trial converted — you're on the ${billing.planName} plan at ${formatMoney(billing.monthlyCostCents)}/mo.`
+            : `${billing.planName} plan · ${formatMoney(billing.monthlyCostCents)}/mo.`}{" "}
+        <a href="/billing" className="font-semibold text-brand-700 hover:text-brand-800">
+          Manage billing
+        </a>
+      </p>
     </section>
   );
 }
