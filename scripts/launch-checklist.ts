@@ -250,7 +250,7 @@ const ownerItems: Array<[string, string]> = [
 // ---------------------------------------------------------------------------
 const jProbe = (f: string, s: string): boolean => { const t = readIfExists(ROOT + f); return t != null && t.includes(s); };
 row("Req 21 journey-18", "1 create account", jProbe("src/lib/server/authFns.ts", "signupFn") && jProbe("src/db/queries/auth.ts", "createBusinessWithOwner") ? "PASS" : "FAIL");
-row("Req 21 journey-18", "2 onboarding wizard", jProbe("src/routes/_app/onboarding.tsx", "OnboardingState") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "2 onboarding wizard", jProbe("src/routes/_app/onboarding.tsx", "createFileRoute(\"/_app/onboarding\")") && jProbe("src/routes/_app/onboarding.tsx", "setStep") ? "PASS" : "FAIL");
 row("Req 21 journey-18", "3 service area", jProbe("src/lib/server/settingsFns.ts", "addServiceAreaFn") ? "PASS" : "FAIL");
 row("Req 21 journey-18", "4 services", jProbe("src/lib/server/settingsFns.ts", "addServiceFn") && jProbe("src/lib/server/settingsFns.ts", "seedServicesFromDefaultsFn") ? "PASS" : "FAIL");
 row("Req 21 journey-18", "5 hours", jProbe("src/lib/server/settingsFns.ts", "saveBusinessHoursFn") ? "PASS" : "FAIL");
