@@ -28,7 +28,7 @@ export function formatAppointmentTime(date: Date, timezone: string | null | unde
   }
 }
 
-/** "$149.00" from cents. Never throws. */
+/** Cents to a "$12.34"-style USD string. Never throws. */
 export function formatCentsAsUsd(cents: number | null | undefined): string {
   const value = typeof cents === "number" && Number.isFinite(cents) ? cents : 0;
   return "$" + (value / 100).toFixed(2);
