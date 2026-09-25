@@ -188,3 +188,16 @@ export async function clearInvalidNumber(businessId: string, phone: string): Pro
     RETURNING id`;
   return rows.length > 0;
 }
+
+/**
+ * DELIBERATELY CROSS-BUSINESS (like login email lookup / getBusinessByPhoneKey):
+ * the P4-S cron sweep walks every business's due workflow sends and carries no
+ * session — only the CRON_SECRET guard. Used exclusively by
+ * src/routes/api/cron/sms-workflows.ts. Returns only the ids the sweep needs.
+ */
+export async function listBusinessSummaries(): Promise<{ id: string }[]> {
+  assertServer();
+  const db = sql();
+  const rows = await db`SELECT id FROM businesses ORDER BY created_at ASC LIMIT 500`;
+  return rows as unknown as { id: string }[];
+}

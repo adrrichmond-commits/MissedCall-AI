@@ -16,7 +16,10 @@
 import * as q from "~/db/queries";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
-import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
+import {
+  notifyOwnerViaSms,
+  queueOwnerNotificationEmail,
+} from "~/lib/server/smsWorkflowTriggers";
 import { maybeCreateFollowUpTaskForNewLead } from "~/lib/server/followUps";
 /** Capture a lead AND record the new_lead in-app notification. */
 export async function captureLead(businessId: string, input: CreateLeadInput): Promise<Lead> {
@@ -32,15 +35,21 @@ export async function captureLead(businessId: string, input: CreateLeadInput): P
     type: "new_lead",
     payload,
   });
-  // Fire-and-forget email (no-op unless the provider is configured). Never
-  // blocks or throws into the caller.
-  queueNotificationEmail({
+  // P4-S: owner email + SMS honor the business notification-channel controls.
+  // Fire-and-forget — never blocks or throws into the caller.
+  const bizRow = await q.getBusiness(businessId).catch(() => null);
+  const bizSettings = (bizRow as unknown as { settings?: Record<string, unknown> } | null)?.settings ?? null;
+  queueOwnerNotificationEmail({
     businessId,
+    businessSettings: bizSettings,
     notificationId: notification.id,
     type: "new_lead",
     payload,
-    store: notificationEmailStore,
   });
+  void notifyOwnerViaSms(businessId, "new_lead", {
+    customerName: lead.contactName ?? "a customer",
+    serviceNeed: lead.serviceNeed ?? "service request",
+  }, { leadId: lead.id });
   // P3-C: the capture follow-up task ('lead_new') — best-effort, never fails
   // the capture (the same contract as the notification above).
   await maybeCreateFollowUpTaskForNewLead(businessId, lead);
@@ -69,13 +78,14 @@ export async function notifyAppointmentRequested(
     type: "appointment_requested",
     payload,
   });
-  // Fire-and-forget email (no-op unless the provider is configured). Never
-  // blocks or throws into the caller.
-  queueNotificationEmail({
+  // P4-S: fire-and-forget owner email gated by the channel controls (the
+  // appointment_requested SMS channel has no owner workflow — null mapping).
+  const bizRow = await q.getBusiness(businessId).catch(() => null);
+  queueOwnerNotificationEmail({
     businessId,
+    businessSettings: (bizRow as unknown as { settings?: Record<string, unknown> } | null)?.settings ?? null,
     notificationId: notification.id,
     type: "appointment_requested",
     payload,
-    store: notificationEmailStore,
   });
 }

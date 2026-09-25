@@ -18,6 +18,8 @@ export interface LeadFilters {
   priority?: LeadPriority;
   /** Matches contact name / phone / service need. */
   search?: string;
+  /** P4-S: only leads created strictly before this instant (follow-up sweep). */
+  createdBefore?: Date;
 }
 
 export interface CreateLeadInput {
@@ -86,7 +88,11 @@ function leadWhere(businessId: string, f: LeadFilters): { text: string; values: 
     const like = `%${f.search.trim()}%`;
     values.push(like);
     const n = values.length;
-    clauses.push(`(contact_name ILIKE $${n} OR contact_phone ILIKE $${n} OR service_need ILIKE $${n})`);
+    clauses.push(`(contact_name ILIKE ${n} OR contact_phone ILIKE ${n} OR service_need ILIKE ${n})`);
+  }
+  if (f.createdBefore) {
+    values.push(f.createdBefore.toISOString());
+    clauses.push(`created_at < ${values.length}`);
   }
   return { text: clauses.join(" AND "), values };
 }
