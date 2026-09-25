@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { getAnalyticsFn, type AnalyticsData } from "~/lib/server/appFns";
+import { useRouter } from "@tanstack/react-router";
+import { getAnalyticsFn, savePerformanceDigestFn, type AnalyticsData } from "~/lib/server/appFns";
+import type { DigestFrequency } from "~/lib/digest";
 import { ErrorState, PageHeader, PageLoading } from "~/components/app/pageStates";
 import { formatMoney } from "~/lib/format";
 import type { PerformanceReport, PeriodKey, ReportingCounts, TrendDirection } from "~/lib/server/reporting";
@@ -115,6 +117,8 @@ function AnalyticsPage() {
 
       {/* P5-5: performance over time — daily/weekly/monthly with trends */}
       <PerformanceSection report={data.performance} />
+      {/* P5-5: the opt-in retention digest (config + honest last-send state) */}
+      <DigestCard digest={data.digest} />
 
       {/* Primary value metric: missed-call recovery funnel (all real rows) */}
       <section  className="rounded-xl border border-brand-200 bg-white p-5" aria-label="Missed calls recovered">
@@ -413,6 +417,81 @@ function PerformanceSection({ report }: { report: PerformanceReport }) {
           </div>
         </div>
       </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P5-5: the performance digest — opt-in daily/weekly value recap. Configured
+// right here on the analytics page; delivery rides the existing notification
+// path (in-app always, email/SMS through the channel gates the business
+// already controls) and the cron sweep's anti-spam caps (content gate, min
+// interval, one digest per period — never "nothing happened" spam).
+// ---------------------------------------------------------------------------
+
+function DigestCard({ digest }: { digest: AnalyticsData["digest"] }) {
+  const router = useRouter();
+  const [enabled, setEnabled] = useState(digest.config.enabled);
+  const [frequency, setFrequency] = useState<DigestFrequency>(digest.config.frequency);
+  const [state, setState] = useState<{ kind: "idle" | "saving" | "saved" | "error"; message?: string }>({ kind: "idle" });
+
+  const save = async () => {
+    setState({ kind: "saving" });
+    const res = await savePerformanceDigestFn({ data: { enabled, frequency } });
+    if (res.ok) {
+      setState({ kind: "saved", message: "Digest settings saved." });
+      void router.invalidate();
+    } else {
+      setState({ kind: "error", message: res.error });
+    }
+  };
+
+  return (
+    <section className="mt-4 rounded-xl border border-slate-200 bg-white p-5" aria-label="Performance digest">
+      <h2 className="text-sm font-semibold text-slate-900">Performance digest</h2>
+      <p className="mt-0.5 text-xs text-slate-500">
+        A daily or weekly recap of what MissedCall AI recovered for you — leads captured, jobs booked,
+        and estimated revenue (always labeled as an estimate). Sent only when something actually
+        happened, at most one per period, to the channels you already control in Settings.
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-500/20"
+          />
+          Send me the digest
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          Frequency
+          <select
+            value={frequency}
+            onChange={(e) => setFrequency(e.target.value === "daily" ? "daily" : "weekly")}
+            disabled={!enabled}
+            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus:border-brand-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+          >
+            <option value="daily">Daily (yesterday's numbers)</option>
+            <option value="weekly">Weekly (last week's numbers)</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={save}
+          disabled={state.kind === "saving"}
+          className="rounded-lg bg-brand-500 px-3.5 py-1.5 text-sm font-semibold text-white hover:bg-brand-600 disabled:opacity-60"
+        >
+          {state.kind === "saving" ? "Saving…" : "Save"}
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-slate-500" role="status">
+        {state.kind === "saved" && <span className="font-medium text-green-700">✓ {state.message} </span>}
+        {state.kind === "error" && <span className="font-medium text-red-700">{state.message} </span>}
+        {digest.lastSentAt
+          ? `Last digest: ${new Date(digest.lastSentAt).toLocaleString()}.`
+          : "No digest sent yet — the first one goes out after your first enabled period completes."}
+      </p>
     </section>
   );
 }

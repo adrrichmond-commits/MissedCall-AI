@@ -31,7 +31,8 @@ import {
 } from "~/lib/server/revenue";
 import { buildRoiPanelData } from "~/lib/server/roiPanel";
 import type { RoiPanelData } from "~/lib/server/roi";
-import { buildAnalyticsPageData, type AnalyticsPageData } from "~/lib/server/reportingReads";
+import { buildAnalyticsPageData, type AnalyticsPageData, type DigestStatusView } from "~/lib/server/reportingReads";
+import { sanitizePerformanceDigestConfig } from "~/lib/digest";
 import type { LeadStatus } from "~/db/schema";
 import { TAKEOVER_REASON_LABELS, type TakeoverReasonKey } from "~/lib/takeover";
 
@@ -1142,6 +1143,44 @@ export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// P5-5: performance digest config — the retention layer's opt-in switch
+// ---------------------------------------------------------------------------
+
+export const savePerformanceDigestFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { enabled?: unknown; frequency?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<DigestStatusView>> => {
+      try {
+        const ctx = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        // Sanitize server-side — the client never gets to store raw config.
+        const config = sanitizePerformanceDigestConfig({
+          enabled: data?.enabled === true,
+          frequency: data?.frequency,
+        });
+        const bizRow = await q.getBusiness(businessId);
+        if (!bizRow) return { ok: false, status: 404, error: "Business not found." };
+        const settings = {
+          ...((bizRow as unknown as { settings?: Record<string, unknown> }).settings ?? {}),
+        };
+        settings.performanceDigest = config;
+        settings.performanceDigestSavedAt = new Date().toISOString();
+        await q.updateBusinessSettings(businessId, settings);
+        const last = await q.lastDigestNotification(businessId).catch(() => null);
+        return {
+          ok: true,
+          data: {
+            config,
+            lastSentAt: last ? new Date(last.createdAt).toISOString() : null,
+          },
+        };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // P3-D: captured-calls funnel (dashboard revenue card + P4-A funnel tracking)

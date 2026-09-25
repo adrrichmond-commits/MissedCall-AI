@@ -61,7 +61,11 @@ jobs:
           # P4-R audit: knock + receptionist are also mock-based, credential-free
           # suites (verified: "no DB, no network, no real provider keys" in their
           # headers) — they were missing from this list; added.
-          suites="admin billing classify crm email kb pipeline revenue sms sms-workflows stripe voice infra p4v p4a knock receptionist journey p52-roi p53-settings p54-takeover"
+          # DB-backed suites (e2e-journey, p52-roi, p53-settings, p54-takeover,
+          # p55-reporting) run in the smoke-and-isolation job below — they need
+          # DATABASE_URL, which only exists there (and "journey" pointed at a
+          # file that does not exist: the suite is test-e2e-journey.ts).
+          suites="admin billing classify crm email kb pipeline revenue sms sms-workflows stripe voice infra p4v p4a knock receptionist"
           for t in $suites; do
             echo "::group::bun scripts/test-$t.ts"
             if bun "scripts/test-$t.ts"; then
@@ -148,3 +152,17 @@ jobs:
 
       - name: Business data-isolation suite (two businesses, zero cross-reads)
         run: bun scripts/test-isolation.ts
+
+      - name: DB-backed feature suites (DATABASE_URL from the service container)
+        run: |
+          suites="e2e-journey p52-roi p53-settings p54-takeover p55-reporting"
+          for t in $suites; do
+            echo "::group::bun scripts/test-$t.ts"
+            if bun "scripts/test-$t.ts"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::suite failed: scripts/test-$t.ts"
+              exit 1
+            fi
+          done
