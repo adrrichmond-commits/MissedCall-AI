@@ -119,6 +119,11 @@ export interface Business {
   plan: BusinessPlan;
   /** When the 14-day trial ends (null = no trial period recorded). */
   trialEndsAt: Date | null;
+  /**
+   * P4-V (migration 018): true only for the seeded demo business. Drives the
+   * persistent in-app DEMO banner so sample data is never mistaken for real.
+   */
+  isDemo: boolean;
   /** Phase 1 placeholder state; Stripe lifecycle takes this over in Phase 2. */
   subscriptionStatus: string | null;
   /**

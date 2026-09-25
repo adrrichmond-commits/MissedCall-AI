@@ -32,6 +32,7 @@ export async function currentSession(): Promise<CurrentUserView | null> {
     businessId: ctx.business.id,
     businessName: ctx.business.name,
     businessPlan: ctx.business.plan,
+    isDemoBusiness: ctx.business.isDemo === true,
     sessionExpiresAt: ctx.session.expiresAt.toISOString(),
   };
 }
