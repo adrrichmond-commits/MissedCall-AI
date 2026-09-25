@@ -12,7 +12,7 @@
 import type { Notification } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
-/** Must match the notifications_type_check constraint (007, widened by 009 + 020). */
+/** Must match the notifications_type_check constraint (007, widened by 009/020/021). */
 export const NOTIFICATION_TYPES = [
   "new_lead",
   "lead_booked",
@@ -22,6 +22,7 @@ export const NOTIFICATION_TYPES = [
   "payment_failed",
   "ai_loop_detected",
   "takeover_needed",
+  "performance_digest",
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
@@ -63,11 +64,12 @@ export async function createNotification(
 // Email delivery accounting (Phase 2 build #6, migration 010)
 // ---------------------------------------------------------------------------
 
-/** The notification types the fire-and-forget email hook covers (build #6). */
+/** The notification types the fire-and-forget email hook covers (build #6, P5-5). */
 export const EMAIL_DELIVERY_TYPES = [
   "new_lead",
   "appointment_requested",
   "payment_failed",
+  "performance_digest",
 ] as const;
 export type EmailDeliveryType = (typeof EMAIL_DELIVERY_TYPES)[number];
 
@@ -184,4 +186,43 @@ export async function markAllNotificationsRead(businessId: string): Promise<numb
     WHERE business_id = ${businessId} AND read_at IS NULL
     RETURNING id`;
   return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Performance digests (P5-5) — anti-spam state reads
+// ---------------------------------------------------------------------------
+
+/**
+ * The business's most recent performance_digest notification (null when the
+ * business has never received one). The digest sweep's minimum-interval cap
+ * reads this — the state is the digest history itself, so a settings stamp
+ * can never drift from reality.
+ */
+export async function lastDigestNotification(businessId: string): Promise<Notification | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `SELECT * FROM notifications
+     WHERE business_id = $1 AND type = 'performance_digest'
+     ORDER BY created_at DESC LIMIT 1`,
+    [businessId],
+  );
+  return (rows[0] as unknown as Notification | undefined) ?? null;
+}
+
+/**
+ * True when a performance_digest for this exact period key already exists
+ * (payload->>'periodKey') — the idempotency cap: a period is digested at most
+ * once no matter how often the cron is pinged. Business-scoped.
+ */
+export async function digestSentForPeriod(businessId: string, periodKey: string): Promise<boolean> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `SELECT 1 FROM notifications
+     WHERE business_id = $1 AND type = 'performance_digest' AND payload->>'periodKey' = $2
+     LIMIT 1`,
+    [businessId, periodKey],
+  );
+  return rows.length > 0;
 }

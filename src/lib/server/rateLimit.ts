@@ -49,6 +49,7 @@ export const RATE_LIMITS = {
   // Cron sweeps are one caller (the external scheduler) pinging periodically;
   // 120/hour permits a per-30s scheduler while still blunting abuse.
   sms_workflow_cron: { limit: 120, windowSec: 3600, envVar: "RATE_LIMIT_SMS_CRON_PER_HOUR", description: "SMS workflow cron sweep pings per source IP" },
+  performance_digest_cron: { limit: 120, windowSec: 3600, envVar: "RATE_LIMIT_DIGEST_CRON_PER_HOUR", description: "Performance-digest cron sweep pings per source IP" },
 } as const satisfies Record<string, BucketConfig>;
 export type RateLimitBucket = keyof typeof RATE_LIMITS;
 interface WindowState {

@@ -81,6 +81,8 @@ export function buildEmailSubject(type: NotificationType, businessName: string):
       return "New appointment request for " + shop;
     case "payment_failed":
       return "Payment failed - action needed for " + shop;
+    case "performance_digest":
+      return "Performance digest for " + shop;
     default:
       return "Update for " + shop;
   }
@@ -117,6 +119,16 @@ export function buildEmailText(
         "A card payment failed for " + shop + "'s MissedCall AI subscription." +
         " Update your billing details in your dashboard to avoid interruption."
       );
+    case "performance_digest": {
+      const period = typeof payload.periodLabel === "string" ? payload.periodLabel : null;
+      const summary = typeof payload.summary === "string" ? payload.summary : null;
+      return (
+        "Your MissedCall AI recap for " + shop +
+        (period ? " — " + period : "") + "." +
+        (summary ? " " + summary : "") +
+        " Open your dashboard for the full performance report."
+      );
+    }
     default:
       return "You have a new update for " + shop + " in your MissedCall AI dashboard.";
   }
