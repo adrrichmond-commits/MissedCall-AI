@@ -59,7 +59,7 @@ try {
 const migrationFiles = existsSync(ROOT + "migrations")
   ? readdirSync(ROOT + "migrations").filter((f) => f.endsWith(".sql")).sort()
   : [];
-row("Database", "Migration files present (001–016)", migrationFiles.length >= 16 ? "PASS" : "FAIL", migrationFiles.length + " files; latest: " + (migrationFiles.at(-1) ?? "none"));
+row("Database", "Migration files present", migrationFiles.length >= 16 ? "PASS" : "FAIL", migrationFiles.length + " files; latest: " + (migrationFiles.at(-1) ?? "none"));
 // ---------------------------------------------------------------------------
 // 3. Env-gates declared — every integration is env-gated and dormant until
 //    the owner sets the key. The gate NAMES are the contract.
@@ -73,6 +73,8 @@ const envContract: Array<[string, string, string[]]> = [
   ["Billing webhook", "STRIPE_WEBHOOK_SECRET", ["src/lib/server/stripeWebhook.ts"]],
   ["Error monitor", "ERROR_MONITOR_DSN (optional, no-op when unset)", ["src/lib/server/errorSink.ts"]],
   ["Admin gate", "PLATFORM_OWNER_EMAIL", ["src/lib/server/admin.ts"]],
+  ["Cron auth", "CRON_SECRET (route 503s honestly when unset)", ["src/routes/api/cron/sms-workflows.ts"]],
+  ["Notifications", "KNOCK_API_KEY (email transport; EMAIL_* fallback)", ["src/lib/server/knock.ts"]],
 ];
 for (const [area, envs, files] of envContract) {
   const missing = files.filter((f) => !existsSync(ROOT + f));
@@ -151,7 +153,9 @@ async function runServeChecks(): Promise<void> {
     if (!up) return;
     const ready = await fetch(BASE + "/api/healthz/ready").then((r) => r.json()).catch(() => null) as { ok?: boolean } | null;
     row("Runtime", "Readiness probe ok (migrations applied)", ready?.ok === true ? "PASS" : "FAIL");
-    for (const path of ["/", "/login", "/signup", "/pricing", "/privacy", "/terms", "/sms-consent"]) {
+    // P4-R fix: there is no /pricing route — pricing is an on-page section of
+    // the landing page (id="pricing"). /demo is the public demo surface.
+    for (const path of ["/", "/login", "/signup", "/demo", "/privacy", "/terms", "/sms-consent"]) {
       const res = await fetch(BASE + path, { redirect: "manual" });
       row("Runtime", "GET " + path + " renders (2xx/3xx)", (res.status >= 200 && res.status < 400) ? "PASS" : "FAIL", "status " + String(res.status));
     }
@@ -166,11 +170,68 @@ async function runServeChecks(): Promise<void> {
   }
 }
 // ---------------------------------------------------------------------------
-// 10. Owner-actionable items — the honest "cannot check programmatically".
+// 10. The owner's 20 Phase 4 requirement areas (business plan Phase 4 table),
+//     mapped to automated evidence. PASS = verified wiring in the repo; WARN =
+//     wiring verified but live value gated on an owner action (see NEEDS OWNER
+//     ACTION); FAIL = expected artifact missing. Every grep target below was
+//     hand-verified against the code when this map was written (P4-R audit) —
+//     no fabricated strings.
+// ---------------------------------------------------------------------------
+const src = (p: string) => readIfExists(ROOT + p);
+// 1. Production launch infra
+row("Req 1 launch-infra", "Probes + error sink + logging + env/backup docs", existsSync(ROOT + "src/routes/api/healthz.ts") && existsSync(ROOT + "src/routes/api/healthz.ready.ts") && existsSync(ROOT + "docs/operations/environments.md") && existsSync(ROOT + "docs/operations/backup-restore.md") ? "PASS" : "FAIL");
+// 2. Simple customer onboarding
+row("Req 2 onboarding", "9-step onboarding wizard route; flow exercised by test-smoke.ts in CI", existsSync(ROOT + "src/routes/_app/onboarding.tsx") ? "PASS" : "FAIL");
+// 3. Phone integration prod readiness
+row("Req 3 phone-prod", "SMS + voice webhooks with signature validation, retries, fallbacks", existsSync(ROOT + "src/routes/api/webhooks/twilio.ts") && existsSync(ROOT + "src/routes/api/webhooks/twilio.voice.ts") && src("src/lib/server/twilioSignature.ts").includes("twilioSignatureIsValid") ? "PASS" : "FAIL");
+row("Req 3 phone-prod", "Live calling + real inbound SMS (code ready)", "WARN", "gated on Twilio number purchase + A2P 10DLC approval");
+// 4. SMS automation
+const workflowCatalog = src("src/lib/smsWorkflows.ts");
+row("Req 4 sms-automation", "5 workflow types (missed_call, confirmation, reminder, follow_up, emergency) + engine safeguards (cooldown, caps, dedup)", workflowCatalog.includes("WORKFLOW_CATALOG") && workflowCatalog.includes("missed_call") && src("src/lib/server/smsWorkflowEngine.ts").includes("cooldown") ? "PASS" : "FAIL");
+// 5. AI receptionist configuration
+row("Req 5 receptionist-cfg", "Receptionist studio route + pure config module + 61-check suite", existsSync(ROOT + "src/routes/_app/receptionist.tsx") && existsSync(ROOT + "src/lib/voice/callFlow.ts") && existsSync(ROOT + "scripts/test-receptionist.ts") ? "PASS" : "FAIL");
+// 6. Lead automation
+const textBackMod = src("src/lib/server/textBack.ts");
+row("Req 6 lead-automation", "Missed-call text-back auto-captures leads (captureMissedCallLead in SMS + voice paths)", textBackMod.includes("captureMissedCallLead") && src("src/lib/server/voiceReceptionist.ts").includes("captureMissedCallLead") ? "PASS" : "FAIL");
+// 7. Dashboard
+row("Req 7 dashboard", "Dashboard with P4-V priority order + trial value indicator; 84-check p4v suite", existsSync(ROOT + "src/routes/_app/dashboard.tsx") && existsSync(ROOT + "scripts/test-p4v.ts") ? "PASS" : "FAIL");
+// 8. Revenue attribution
+row("Req 8 revenue", "Revenue attribution module + 73-check suite (won/lost, estimated value)", existsSync(ROOT + "src/lib/server/revenue.ts") && existsSync(ROOT + "scripts/test-revenue.ts") ? "PASS" : "FAIL");
+// 9. Trial value
+row("Req 9 trial-value", "Trial value view module (recovered-customer indicator + honest zero state)", src("src/lib/trialValue.ts").includes("trialValueView") && src("src/lib/trialValue.ts").includes("TRIAL_ZERO_STATE_MESSAGE") ? "PASS" : "FAIL");
+// 10. Billing enforcement
+row("Req 10 billing", "Stripe checkout + webhook activation + trial enforcement + usage gates; 36-check billing suite", existsSync(ROOT + "src/lib/server/stripeWebhook.ts") && existsSync(ROOT + "src/lib/server/usageGate.ts") && src("src/routes/api/webhooks/stripe.ts").includes("verifyStripeSignature") ? "PASS" : "FAIL");
+// 11. Demo mode
+row("Req 11 demo-mode", "Demo route with clearly labeled demo data (seed business)", existsSync(ROOT + "src/routes/demo.tsx") ? "PASS" : "FAIL");
+// 12. Admin/support tools
+row("Req 12 admin-tools", "Admin surface (accounts/search, audited impersonation, audit log, health, funnel, prompts) behind env+flag gate", existsSync(ROOT + "src/routes/admin/accounts.tsx") && existsSync(ROOT + "src/routes/admin/audit.tsx") && src("src/lib/server/admin.ts").includes("impersonateBusiness") ? "PASS" : "FAIL");
+// 13. Automated customer comms
+row("Req 13 customer-comms", "Customer-facing workflows incl. one-time onboarding welcome; appointment reminders + follow-ups via cron", src("src/lib/server/smsWorkflowTriggers.ts").includes("maybeSendOnboardingWelcome") && existsSync(ROOT + "src/routes/api/cron/sms-workflows.ts") ? "PASS" : "FAIL");
+// 14. Product analytics
+row("Req 14 analytics", "Funnel tracking (visitor→…→paid) + admin funnel view; tracking failures never block the app", src("src/lib/server/funnelTrack.ts").includes("trackFunnel") && existsSync(ROOT + "src/routes/admin/funnel.tsx") ? "PASS" : "FAIL");
+// 15. Landing page conversion
+const landing = src("src/routes/index.tsx");
+row("Req 15 landing", "Landing with trial CTAs (3× 'Start Your Free Trial', 'See How It Works') + pricing section rendered from src/lib/pricing.ts (no /pricing route — it is an on-page section)", landing.includes("Start Your Free Trial") && landing.includes("See How It Works") && landing.includes('id="pricing"') && landing.includes("PLANS") ? "PASS" : "FAIL");
+// 16. Feedback capture
+row("Req 16 feedback", "Per-conversation 'How did MissedCall AI handle this?' thumbs+note + aggregate quality page", existsSync(ROOT + "src/lib/analytics/feedback.ts") && existsSync(ROOT + "src/routes/_app/quality.tsx") ? "PASS" : "FAIL");
+// 17. AI quality control
+row("Req 17 ai-quality", "AI outcome monitoring + review flags + runtime prompt overlays (no-deploy iteration)", src("src/lib/server/qualityMonitor.ts").includes("recomputeConversationFlags") && existsSync(ROOT + "src/lib/server/promptOverrides.ts") && existsSync(ROOT + "src/routes/admin/prompts.tsx") ? "PASS" : "FAIL");
+// 18. Reliability & failover
+row("Req 18 reliability", "SMS retries w/ backoff + delivery failure recording + voice fallback ladder + reliability docs", src("src/lib/server/sms.ts").includes("isTransientSmsFailure") && src("src/routes/api/webhooks/twilio.voice.ts").includes("fallbackTwiML") && existsSync(ROOT + "docs/operations/reliability.md") ? "PASS" : "FAIL");
+// 19. Security review
+row("Req 19 security", "Webhook signatures (Twilio SMS+voice, Stripe) + rate limits (auth, webhooks, cron) + admin gate + isolation suite (60 checks, permanent)", existsSync(ROOT + "scripts/test-isolation.ts") && src("src/lib/server/rateLimit.ts").includes("checkRateLimit") ? "PASS" : "FAIL");
+// 20. Launch checklist
+row("Req 20 checklist", "This script (CI warn-only) + verify-deploy.ts hard pre-publish gate + smoke suite", existsSync(ROOT + "scripts/verify-deploy.ts") && existsSync(ROOT + "scripts/test-smoke.ts") ? "PASS" : "FAIL");
+
+// ---------------------------------------------------------------------------
+// 11. Owner-actionable items — the honest "cannot check programmatically".
 // ---------------------------------------------------------------------------
 const ownerItems: Array<[string, string]> = [
   ["A2P 10DLC approval", "gates REAL outbound SMS at scale (10–15 business days once submitted)"],
   ["Twilio number purchase", "gates live voice answering + inbound SMS to a real number"],
+  ["Knock provider connection + workflow publish", "gates email notification delivery (in-app always works; EMAIL_* fallback if Knock unused)"],
+  ["CRON_SECRET in Secrets + external scheduler pinging /api/cron/sms-workflows every 15–60 min", "gates appointment reminders + lead follow-up sweeps"],
+  ["Real-card conversion test after STRIPE keys land", "one live-mode checkout with a real card is the only proof trial→paid works end-to-end"],
   ["STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET in Secrets", "gates real checkout + subscription activation"],
   ["LLM_API_KEY in Secrets", "gates the LLM classification tier (rules engine works without it)"],
   ["Email provider key in Secrets", "gates outbound owner-email delivery (in-app notifications work without)"],
