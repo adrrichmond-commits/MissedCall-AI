@@ -14,7 +14,8 @@ import type { SmsInvalidNumber, SmsWorkflowSend } from "../schema";
 import { assertServer, sql } from "./shared";
 
 /** Record one evaluated workflow send attempt. Outcome is honest: 'sent' rows
- *  carry provider_sid and are the ONLY rows counted by suppression/caps. */
+ *  carry provider_sid and are the ONLY rows counted by suppression/caps.
+ *  sentAt is the engine's decision time (defaults to insert time). */
 export async function recordWorkflowSend(
   businessId: string,
   input: {
@@ -28,6 +29,8 @@ export async function recordWorkflowSend(
     leadId?: string | null;
     appointmentId?: string | null;
     conversationId?: string | null;
+    /** The engine's decision time; stamps created_at (defaults to insert time). */
+    sentAt?: Date | null;
   },
 ): Promise<void> {
   assertServer();
@@ -35,8 +38,8 @@ export async function recordWorkflowSend(
   await db.query(
     `INSERT INTO sms_workflow_sends
        (business_id, workflow_key, phone, recipient, outcome, suppress_reason,
-        body, provider_sid, lead_id, appointment_id, conversation_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        body, provider_sid, lead_id, appointment_id, conversation_id, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       businessId,
       input.workflowKey,
@@ -49,6 +52,7 @@ export async function recordWorkflowSend(
       input.leadId ?? null,
       input.appointmentId ?? null,
       input.conversationId ?? null,
+      input.sentAt ?? new Date(),
     ],
   );
 }

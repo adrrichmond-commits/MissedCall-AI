@@ -205,12 +205,20 @@ function makeIo(overrides?: {
   const marked: string[] = [];
   const sendErrors: string[] = [];
   let metered = 0;
-  const cfg = (overrides?.business ?? {}) as Record<string, unknown>;
-  const business = {
-    name: (cfg.name as string) ?? "Rapid Rooter Plumbing",
-    phone: (cfg.phone as string) ?? "+15125550100",
-    timezone: (cfg.timezone as string) ?? "America/Chicago",
-    settings: (cfg.settings as Record<string, unknown>) ?? {},
+  // The fake store must model STATE FEEDBACK: cooldown state is derived from
+  // what the engine records, exactly like the real Neon store (which reads
+  // sms_workflow_sends back). lastSent maps phone|key -> decision time using
+  // the sentAt the engine passes with every audit row.
+  const lastSent = new Map<string, Date>();
+  // An explicit null business means "no business row" (missing business); an
+  // explicit null phone must NOT silently fall back to the default — only an
+  // ABSENT key does. (?? would eat the null: it treats null as absent.)
+  const cfg = overrides && overrides.business !== undefined ? overrides.business : undefined;
+  const business = cfg === null ? null : {
+    name: (cfg?.name as string) ?? "Rapid Rooter Plumbing",
+    phone: cfg && cfg.phone !== undefined ? (cfg.phone as string | null) : "+15125550100",
+    timezone: cfg && cfg.timezone !== undefined ? (cfg.timezone as string | null) : "America/Chicago",
+    settings: (cfg?.settings as Record<string, unknown>) ?? {},
     trialEndsAt: null as Date | null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
@@ -219,10 +227,12 @@ function makeIo(overrides?: {
     isSmsOptedOut: async (_b, phone) => (overrides?.optedOut ?? []).includes(phone),
     isInvalidNumber: async (_b, phone) => (overrides?.invalid ?? []).includes(phone),
     markInvalidNumber: async (_b, phone) => { marked.push(phone); },
-    lastWorkflowSentAt: async (_b, phone, key) => overrides?.cooldown?.get(phone + "|" + key) ?? null,
+    lastWorkflowSentAt: async (_b, phone, key) =>
+      overrides?.cooldown?.get(phone + "|" + key) ?? lastSent.get(phone + "|" + key) ?? null,
     countWorkflowSentsForPhoneSince: async () => rows.filter((r) => r.phone === "+15125550134" && r.outcome === "sent").length,
     recordWorkflowSend: async (_b, input) => {
       rows.push({ workflowKey: input.workflowKey, phone: input.phone, outcome: input.outcome, sid: input.providerSid ?? null });
+      if (input.outcome === "sent" && input.sentAt) lastSent.set(input.phone + "|" + input.workflowKey, input.sentAt);
     },
   };
   const io: WorkflowEngineIo = {
@@ -271,7 +281,12 @@ const BASE = { businessId: "b1", workflowKey: "missed_call_recovery" as const, t
   check("missing customer number honest", r.outcome, "no_recipient");
 }
 {
-  const { io, rows } = makeIo({ optedOut: ["+15125550134"] });
+  // Both the customer number AND the owner fallback number (business.phone,
+  // +15125550100) are opted out: the emergency owner send below resolves its
+  // recipient to ownerSmsNumber ?? business.phone, so the owner number must be
+  // in the registry for this check to exercise the path it names — "an
+  // emergency owner text to an opted-out owner phone is still suppressed".
+  const { io, rows } = makeIo({ optedOut: ["+15125550134", "+15125550100"] });
   const r = await sendWorkflowSms({ ...BASE, smsConfigured: true, io });
   check("opt-out stops the send", r.outcome, "opted_out");
   check("opt-out audited", rows[0]?.outcome, "opted_out");

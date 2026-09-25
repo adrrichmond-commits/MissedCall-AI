@@ -167,7 +167,7 @@ export const DEFAULT_WORKFLOW_TEMPLATES: Record<WorkflowKey, string> = {
   new_lead:
     "{businessName} alert: new lead {customerName} — {serviceNeed}. Details in your MissedCall AI dashboard.",
   appointment_confirmation:
-    "{businessName}: your appointment is confirmed for {appointmentTime}. Need to change it? Call us. Reply STOP to opt out.",
+    "{businessName}: hi {customerName} — your appointment is confirmed for {appointmentTime}. Need to change it? Call us. Reply STOP to opt out.",
   appointment_reminder:
     "{businessName} reminder: your appointment is coming up {appointmentTime}. Reply if you need to reschedule.",
   follow_up:
@@ -284,6 +284,18 @@ function sanitizeTemplate(value: unknown, fallback: string): string {
   return trimmed.slice(0, TEMPLATE_MAX_LENGTH);
 }
 
+/**
+ * Cooldown clamping: an owner-chosen cooldown longer than the cap is CLAMPED
+ * to the cap (their intent — "suppress repeats for a long time" — is honored
+ * up to the safety limit), while garbage or negative values fall back to the
+ * workflow default. Never silently disables suppression (no clamp to 0).
+ */
+function clampCooldownMinutes(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? Math.floor(value) : Number.NaN;
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(n, COOLDOWN_MAX_MINUTES);
+}
+
 function sanitizeE164OrNull(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -323,7 +335,7 @@ export function sanitizeSmsWorkflowsConfig(raw: unknown): SmsWorkflowsConfig {
     workflows[key] = {
       enabled: boolOr(wRaw.enabled, base.enabled),
       template: sanitizeTemplate(wRaw.template, base.template),
-      cooldownMinutes: intInRange(wRaw.cooldownMinutes, base.cooldownMinutes, 0, COOLDOWN_MAX_MINUTES),
+      cooldownMinutes: clampCooldownMinutes(wRaw.cooldownMinutes, base.cooldownMinutes),
       hoursBefore:
         key === "appointment_reminder"
           ? intInRange(wRaw.hoursBefore, base.hoursBefore ?? 24, 1, 168)
@@ -486,25 +498,31 @@ export interface AiLoopDecision {
 
 /**
  * Walk the thread NEWEST-FIRST and count consecutive inbound messages that
- * echo our own outbound text. When that count reaches the configured max, the
- * engine stops auto-responding (the count only ever crosses the threshold
+ * echo our own outbound text. The outbound an inbound echoes is OLDER than
+ * the inbound — i.e. it appears LATER in this newest-first array — so each
+ * inbound is matched against the nearest outbound below it. Counting stops at
+ * the first non-echo inbound (a human reply resets the loop) or at an inbound
+ * with no prior outbound of ours. When the count reaches the configured max,
+ * the engine stops auto-responding (the count only ever crosses the threshold
  * once, which also makes the "hand to human" notification naturally
  * per-thread without extra dedup state).
  */
 export function evaluateAiLoop(threadNewestFirst: LoopThreadMessage[], maxReplies: number): AiLoopDecision {
   let echoCount = 0;
-  const outboundBodies: string[] = [];
-  for (const msg of threadNewestFirst) {
-    if (msg.direction === "outbound") {
-      outboundBodies.push(msg.body);
-      continue;
+  for (let i = 0; i < threadNewestFirst.length; i++) {
+    const msg = threadNewestFirst[i];
+    if (msg.direction === "outbound") continue; // outbounds are the echo references, not loop members
+    // Nearest older outbound = the most recent text we sent before this inbound.
+    let priorOutbound: string | null = null;
+    for (let j = i + 1; j < threadNewestFirst.length; j++) {
+      if (threadNewestFirst[j].direction === "outbound") {
+        priorOutbound = threadNewestFirst[j].body;
+        break;
+      }
     }
-    if (outboundBodies.length === 0) break; // reached real human/customer traffic before any of our sends
-    if (looksLikeAutoEcho(msg.body, outboundBodies)) {
-      echoCount++;
-    } else {
-      break;
-    }
+    if (priorOutbound === null) break; // no send of ours to echo — real customer traffic
+    if (!looksLikeAutoEcho(msg.body, [priorOutbound])) break; // human reply resets the loop
+    echoCount++;
   }
   return { suppress: echoCount >= Math.max(1, maxReplies), echoCount };
 }

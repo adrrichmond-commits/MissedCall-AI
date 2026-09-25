@@ -87,6 +87,8 @@ export interface WorkflowEngineStore {
       leadId?: string | null;
       appointmentId?: string | null;
       conversationId?: string | null;
+      /** Time of the engine's decision — lets stores keep cooldown state and stamp rows accurately. */
+      sentAt?: Date;
     },
   ): Promise<void>;
 }
@@ -256,13 +258,15 @@ export async function sendWorkflowSms(args: SendWorkflowSmsArgs): Promise<Workfl
     return result("not_configured", "Twilio not configured");
   }
 
-  // 3. Recipient.
+  // 3. Recipient. A number that is present but unparseable keeps its raw form
+  // so the invalid-number stop below marks it in the registry — reporting
+  // "no_recipient" for a garbage number would hide a data problem.
   const rawPhone =
     recipient === "customer" ? (args.to ?? null) : (config.safeguards.ownerSmsNumber ?? business.phone);
-  const phone = rawPhone ? normalizeToE164(rawPhone) : null;
-  if (!phone) {
+  if (!rawPhone || rawPhone.trim().length === 0) {
     return result("no_recipient", recipient === "owner" ? "No owner SMS number on file" : "No textable customer number");
   }
+  const phone = normalizeToE164(rawPhone) ?? rawPhone;
 
   const audit = (outcome: string, suppressReason?: string | null, body?: string | null, sid?: string | null) =>
     io.store
@@ -277,11 +281,15 @@ export async function sendWorkflowSms(args: SendWorkflowSmsArgs): Promise<Workfl
         leadId: args.leadId ?? null,
         appointmentId: args.appointmentId ?? null,
         conversationId: args.conversationId ?? null,
+        sentAt: now,
       })
       .catch(() => undefined);
 
   // 4. Opt-out — COMPLIANCE. Applies to every recipient; never bypassed.
+  // Audited: a suppressed compliance stop is exactly what the audit trail
+  // exists to show.
   if (await io.store.isSmsOptedOut(args.businessId, phone)) {
+    await audit("opted_out", "stop");
     return result("opted_out", "Customer has opted out (STOP) - never texted");
   }
 
@@ -327,13 +335,16 @@ export async function sendWorkflowSms(args: SendWorkflowSmsArgs): Promise<Workfl
 
   // 9. Plan usage gate (fail open on gate errors — same safety-first order as
   // the text-back path: a metering outage must not drop a safety text).
+  // Emergencies are NEVER silenced by a plan limit: the engine bypasses a
+  // negative gate decision outright (defense in depth on top of the
+  // production gate's own emergency handling).
   let gateDecision: GateDecision | null = null;
   try {
     gateDecision = await io.usage.gate(args.businessId, business, emergency);
   } catch (gateErr) {
     console.log("[workflow] usage gate unavailable - allowing send: " + String(gateErr));
   }
-  if (gateDecision && !gateDecision.allowed) {
+  if (gateDecision && !gateDecision.allowed && !emergency) {
     await audit("limit_reached", gateDecision.message);
     return result("limit_reached", gateDecision.message, null, gateDecision);
   }
