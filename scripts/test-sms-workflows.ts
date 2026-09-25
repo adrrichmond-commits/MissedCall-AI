@@ -322,7 +322,7 @@ const BASE = { businessId: "b1", workflowKey: "missed_call_recovery" as const, t
   io.usage.gate = async () => ({ allowed: false, message: "SMS limit reached on the starter plan", upgradeTarget: "pro" } as never);
   const r = await sendWorkflowSms({ ...BASE, smsConfigured: true, io });
   check("plan gate blocks honestly", r.outcome, "limit_reached");
-  checkTrue("gate decision carried", r.gate !== null && r.gate.message.includes("starter"));
+  checkTrue("gate decision carried", r.gate !== null && !r.gate.allowed && r.gate.message.includes("starter"));
   const emergency = await sendWorkflowSms({ ...BASE, smsConfigured: true, io, emergency: true });
   check("emergency not silenced by plan limit", emergency.outcome, "sent");
 }

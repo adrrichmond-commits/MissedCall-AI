@@ -21,17 +21,26 @@
  * caps, invalid numbers, cooldowns, plan gates, and honest audit rows apply
  * identically here. Failures are recorded per-item and summarized honestly in
  * the response; a failing item never aborts the sweep.
+ *
+ * Route shape: this TanStack Start version wires server handlers through
+ * `createFileRoute(...).options.server.handlers` (see the Stripe webhook and
+ * /api/healthz; there is no createAPIFileRoute export in 1.158).
  */
-import { createAPIFileRoute } from "@tanstack/react-start/api";
+import { createFileRoute } from "@tanstack/react-router";
 import { checkRateLimit, clientIpFromHeaders } from "~/lib/server/rateLimit";
 import { sendWorkflowSms } from "~/lib/server/smsWorkflowEngine";
 import { formatAppointmentTime } from "~/lib/server/workflowTime";
 import * as q from "~/db/queries";
 import { sanitizeSmsWorkflowsConfig, WORKFLOW_CATALOG } from "~/lib/smsWorkflows";
 
-export const APIRoute = createAPIFileRoute("/api/cron/sms-workflows")({
-  POST: ({ request }) => handleSweep(request),
-  GET: ({ request }) => handleSweep(request),
+export const Route = createFileRoute("/api/cron/sms-workflows")({
+  server: {
+    handlers: {
+      // Handler receives the route-method ctx ({ request, params, ... }).
+      POST: ({ request }: { request: Request }) => handleSweep(request),
+      GET: ({ request }: { request: Request }) => handleSweep(request),
+    },
+  },
 });
 
 interface SweepItem {
@@ -87,7 +96,6 @@ async function handleSweep(request: Request): Promise<Response> {
     const settings = (businessRow as unknown as { settings?: Record<string, unknown> }).settings ?? {};
     const config = sanitizeSmsWorkflowsConfig(settings.smsWorkflows);
     const timezone = (businessRow as unknown as { timezone?: string | null }).timezone ?? null;
-    const businessName = businessRow.name ?? "";
 
     // --- Appointment reminders -------------------------------------------
     const reminder = config.workflows.appointment_reminder;
@@ -118,7 +126,7 @@ async function handleSweep(request: Request): Promise<Response> {
           },
         });
         if (outcome.outcome === "sent") remindersSent++;
-        else if (outcome.outcome !== "sent") suppressed++;
+        else suppressed++;
         items.push({
           ref: "appointment:" + appt.id,
           workflowKey: "appointment_reminder",
