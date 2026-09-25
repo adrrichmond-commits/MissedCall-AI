@@ -21,6 +21,7 @@ import {
   newSessionToken,
 } from "~/lib/server/auth.server";
 import { hashPassword, verifyPassword } from "~/lib/server/password";
+import { trackFunnelAll } from "~/lib/server/funnelTrack";
 
 // ---------------------------------------------------------------------------
 // Validation helpers (server-side, never trust client input)
@@ -114,12 +115,15 @@ export const signupFn = createServerFn({ method: "POST" })
     }
 
     const passwordHash = await hashPassword(password);
-    const { user } = await q.createBusinessWithOwner({
+    const { business, user } = await q.createBusinessWithOwner({
       businessName,
       ownerEmail: email,
       ownerFullName: fullName,
       passwordHash,
     });
+    // P4-A funnel: signup + trial start (createBusinessWithOwner stamps the
+    // 14-day trial_ends_at at the same moment). Idempotent, best-effort.
+    void trackFunnelAll(business.id, ["signup", "trial_start"]);
 
     // Delivery is pending provider setup — log the link server-side only.
     const vt = await issueEmailVerificationToken(user.id);

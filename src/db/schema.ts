@@ -305,6 +305,12 @@ export interface Conversation {
   customerPhone: string;
   status: ConversationStatus;
   summary: string | null;
+  /** Migration 019 (P4-A): owner feedback on how the AI handled this thread. */
+  feedbackRating: 'up' | 'down' | null;
+  feedbackNote: string | null;
+  feedbackAt: Date | null;
+  /** Migration 019 (P4-A): AI outcome signals; NULL = the AI never ran here. */
+  aiOutcome: AiOutcome | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -719,6 +725,78 @@ export interface SmsInvalidNumber {
   phone: string;
   reason: string;
   detectedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// P4-A learning loop (migration 019)
+// ---------------------------------------------------------------------------
+
+/** AI outcome signals stored on conversations.ai_outcome (jsonb, migration 019). */
+export interface AiOutcome {
+  /** Any turn captured a name, email, or service address. */
+  capturedContact: boolean;
+  emergencyDetected: boolean;
+  emergencyEscalated: boolean;
+  /** Turns the classification pipeline ran (any tier). */
+  classifiedTurns: number;
+  /** LLM-configured turns where the LLM tier failed and rules backstopped. */
+  failedTurns: number;
+  /** Wall-clock duration of the last classification turn, ms. */
+  lastLatencyMs: number | null;
+}
+
+/** One row per (business, funnel stage) — the FIRST time the stage happened. */
+export type FunnelStage =
+  | 'signup'
+  | 'trial_start'
+  | 'onboarding_completed'
+  | 'phone_connected'
+  | 'first_lead'
+  | 'first_recovered_call'
+  | 'paid';
+
+export interface FunnelEvent {
+  id: string;
+  businessId: string;
+  stage: FunnelStage;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** AI-quality review queue item (migration 019). */
+export type ReviewReason =
+  | 'negative_feedback'
+  | 'emergency_without_escalation'
+  | 'ai_failed_repeatedly'
+  | 'no_contact_captured'
+  | 'high_latency';
+
+export interface AiReviewFlag {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  reason: ReviewReason;
+  detail: string | null;
+  resolved: boolean;
+  resolvedBy: string | null;
+  resolvedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Runtime-editable AI system-prompt overlay version (migration 019). */
+export type PromptSurface = 'lead_capture' | 'receptionist';
+
+export interface PromptVersion {
+  id: string;
+  surface: PromptSurface;
+  version: number;
+  body: string;
+  note: string | null;
+  editedBy: string | null;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

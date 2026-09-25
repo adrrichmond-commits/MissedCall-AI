@@ -14,6 +14,7 @@ import {
   requireAuth,
 } from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
+import { trackFunnel } from "~/lib/server/funnelTrack";
 import { providerStatusView } from "~/lib/server/providerStatus";
 import { receptionistConfigFromSettings, resolveReceptionistGreeting } from "~/lib/voice/receptionistConfig";
 import * as q from "~/db/queries";
@@ -367,6 +368,9 @@ export const updateBusinessInfoFn = createServerFn({ method: "POST" })
         patch.timezone = tz;
       }
       if (Object.keys(patch).length > 0) await q.updateBusiness(businessId, patch);
+      // P4-A funnel: the business connected a real contact phone (today's
+      // honest "phone connected" signal). Idempotent, best-effort.
+      if (patch.phone) void trackFunnel(businessId, "phone_connected");
       return { ok: true, data: { message: "Business info saved." } };
     } catch (e) {
       return validationToResult(e);
@@ -704,6 +708,10 @@ export const skipOnboardingFn = createServerFn({ method: "POST" }).handler(
         onboardingSkippedAt: new Date().toISOString(),
       };
       await q.updateBusinessSettings(businessId, settings);
+      // P4-A funnel: the owner explicitly finished (skipped) the wizard —
+      // recorded as onboarding completed: it is a deliberate exit, not an
+      // abandoned one. Idempotent, best-effort.
+      void trackFunnel(businessId, "onboarding_completed");
       return { ok: true, data: { message: "Onboarding skipped. You can finish setup anytime from Settings." } };
     } catch (e) {
       return validationToResult(e);
@@ -745,6 +753,12 @@ export const getOnboardingNudgeFn = createServerFn({ method: "GET" }).handler(
       emergencyTouched: typeof settings.emergencyPrefsSavedAt === "string",
     });
     const state = onboardingState(ctx.business, done);
+    // P4-A funnel: idempotent stage recording on this cheap gate read —
+    //   onboarding_completed: all five self-serve steps done (or the owner
+    //     skipped deliberately, which skipOnboardingFn records itself);
+    //   phone_connected: a real contact phone is on the business.
+    if (!state.needsOnboarding) void trackFunnel(businessId, "onboarding_completed");
+    if (ctx.business.phone != null) void trackFunnel(businessId, "phone_connected");
     return {
       needsOnboarding: state.needsOnboarding,
       resumeStep: state.resumeStep,
