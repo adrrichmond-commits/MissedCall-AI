@@ -14,6 +14,7 @@ import type { AuthContext } from "~/lib/server/auth";
 import { authErrorToResult } from "~/lib/server/sessionFns";
 import { sendCustomerWorkflow } from "~/lib/server/smsWorkflowTriggers";
 import { formatAppointmentTime } from "~/lib/server/workflowTime";
+import { bookAppointment } from "~/lib/server/appointmentBooking";
 import * as q from "~/db/queries";
 import {
   LEAD_LIFECYCLE_STATUSES,
@@ -774,6 +775,61 @@ export const declineAppointmentFn = createServerFn({ method: "POST" })
           // Notification failure must not fail the business write.
         }
         return { ok: true, data: { appointmentId: updated.id, status: updated.status } };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
+
+// ---------------------------------------------------------------------------
+// Appointment scheduling (P5-1 journey fix): the business books a job from a
+// lead. Before this fn existed, q.createAppointment had NO production caller —
+// the journey dead-ended after the lead. Thin wrapper: session + RBAC +
+// trial gating live here; validation, duplicate-submission collapsing,
+// out-of-area confirmation and the emergency path live in appointmentBooking.
+// ---------------------------------------------------------------------------
+export const scheduleAppointmentFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as Record<string, unknown>)
+  .handler(
+    async ({
+      data,
+    }): Promise<
+      AppResult<{
+        appointmentId: string;
+        status: string;
+        scheduledAt: string;
+        duplicate: boolean;
+        areaStatus: string;
+      }>
+    > => {
+      try {
+        const ctx = await requireActiveWrite("owner", "manager");
+        const result = await bookAppointment(
+          { businessId: ctx.business.id, timezone: ctx.business.timezone },
+          {
+            leadId: data?.leadId,
+            serviceSummary: data?.serviceSummary,
+            scheduledAt: data?.scheduledAt,
+            durationMinutes: data?.durationMinutes,
+            technicianName: data?.technicianName,
+            address: data?.address,
+            notes: data?.notes,
+            confirmOutOfArea: data?.confirmOutOfArea,
+          },
+        );
+        if (!result.ok) {
+          return { ok: false, status: result.status, error: result.error };
+        }
+        return {
+          ok: true,
+          data: {
+            appointmentId: result.appointment.id,
+            status: result.appointment.status,
+            scheduledAt: new Date(result.appointment.scheduledAt).toISOString(),
+            duplicate: result.duplicate,
+            areaStatus: result.areaStatus,
+          },
+        };
       } catch (e) {
         return authErrorToResult(e);
       }

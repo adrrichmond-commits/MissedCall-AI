@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { getLeadFn, setFollowUpTaskDoneFn, updateLeadStatusFn, updateLeadWonValueFn } from "~/lib/server/appFns";
+import { getLeadFn, setFollowUpTaskDoneFn, scheduleAppointmentFn, updateLeadStatusFn, updateLeadWonValueFn } from "~/lib/server/appFns";
 import {
   ErrorState,
   PageLoading,
@@ -100,6 +100,56 @@ function LeadDetailPage() {
   // Optional note collected when flagging follow-up needed.
   const [pendingFollowUp, setPendingFollowUp] = useState(false);
   const [followUpNote, setFollowUpNote] = useState("");
+
+  // Schedule appointment (P5-1): the business books the job from this lead.
+  // The Book button is disabled while a booking POST is in flight AND the
+  // server collapses a re-submitted identical booking (±15 min window) onto
+  // the existing appointment — double-clicks can never create two rows.
+  const [schedWhen, setSchedWhen] = useState("");
+  const [schedDuration, setSchedDuration] = useState("60");
+  const [schedTech, setSchedTech] = useState("");
+  const [schedAddress, setSchedAddress] = useState(lead.contactAddress ?? "");
+  const [schedNotes, setSchedNotes] = useState("");
+  const [schedConfirmOoa, setSchedConfirmOoa] = useState(false);
+  const [schedBusy, setSchedBusy] = useState(false);
+  const [schedMsg, setSchedMsg] = useState<{ kind: "ok" | "dup" | "error" | "warn"; text: string } | null>(null);
+
+  async function submitSchedule() {
+    if (schedBusy) return;
+    if (!schedWhen) {
+      setSchedMsg({ kind: "error", text: "Pick a date and time for the appointment." });
+      return;
+    }
+    const when = new Date(schedWhen);
+    if (Number.isNaN(when.getTime())) {
+      setSchedMsg({ kind: "error", text: "That date and time could not be read. Pick a valid slot." });
+      return;
+    }
+    setSchedBusy(true);
+    setSchedMsg(null);
+    const res = await scheduleAppointmentFn({
+      data: {
+        leadId: lead.id,
+        serviceSummary: lead.serviceNeed || "Service appointment",
+        scheduledAt: when.toISOString(),
+        durationMinutes: schedDuration,
+        technicianName: schedTech,
+        address: schedAddress,
+        notes: schedNotes,
+        confirmOutOfArea: schedConfirmOoa ? "true" : "false",
+      },
+    });
+    setSchedBusy(false);
+    if (!res.ok) {
+      setSchedMsg({ kind: "error", text: res.error });
+      return;
+    }
+    if (res.data.duplicate) {
+      setSchedMsg({ kind: "dup", text: "This job was already on the books — showing the existing appointment." });
+      return;
+    }
+    window.location.reload();
+  }
 
   // The select shows only legal transitions for the CURRENT status (won/lost
   // show only the reopen edge) plus the status itself.
@@ -268,6 +318,109 @@ function LeadDetailPage() {
               <DetailRow label="Internal notes">{lead.notes ?? "—"}</DetailRow>
             </dl>
           </section>
+          {lead.canEditStatus && status !== "won" && status !== "lost" ? (
+            <section aria-labelledby="lead-schedule" className="rounded-xl border border-slate-200 bg-white p-5">
+              <h2 id="lead-schedule" className="text-sm font-semibold text-slate-900">
+                Schedule appointment
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Books the job and moves this lead to “Appointment scheduled”. The customer gets the confirmation text through your SMS settings.
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="sched-when" className="text-xs font-semibold text-slate-500">Date &amp; time</label>
+                  <input
+                    id="sched-when"
+                    type="datetime-local"
+                    value={schedWhen}
+                    disabled={schedBusy}
+                    onChange={(e) => setSchedWhen(e.target.value)}
+                    className="mt-1 h-9 w-full rounded-lg border-0 bg-white px-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="sched-duration" className="text-xs font-semibold text-slate-500">Duration</label>
+                  <select
+                    id="sched-duration"
+                    value={schedDuration}
+                    disabled={schedBusy}
+                    onChange={(e) => setSchedDuration(e.target.value)}
+                    className="mt-1 h-9 w-full rounded-lg border-0 bg-white pl-3 pr-8 text-sm text-slate-700 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-500"
+                  >
+                    {["30", "45", "60", "90", "120", "180", "240"].map((m) => (
+                      <option key={m} value={m}>{m} minutes</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="sched-tech" className="text-xs font-semibold text-slate-500">Technician (optional)</label>
+                  <input
+                    id="sched-tech"
+                    type="text"
+                    maxLength={120}
+                    value={schedTech}
+                    disabled={schedBusy}
+                    onChange={(e) => setSchedTech(e.target.value)}
+                    placeholder="Who's going?"
+                    className="mt-1 h-9 w-full rounded-lg border-0 bg-white px-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="sched-address" className="text-xs font-semibold text-slate-500">Job address</label>
+                  <input
+                    id="sched-address"
+                    type="text"
+                    maxLength={200}
+                    value={schedAddress}
+                    disabled={schedBusy}
+                    onChange={(e) => setSchedAddress(e.target.value)}
+                    className="mt-1 h-9 w-full rounded-lg border-0 bg-white px-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label htmlFor="sched-notes" className="text-xs font-semibold text-slate-500">Notes for the crew (optional)</label>
+                  <textarea
+                    id="sched-notes"
+                    rows={2}
+                    maxLength={500}
+                    value={schedNotes}
+                    disabled={schedBusy}
+                    onChange={(e) => setSchedNotes(e.target.value)}
+                    className="mt-1 w-full rounded-lg border-0 bg-white px-2 py-1.5 text-sm text-slate-900 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                {lead.serviceAreaStatus === "out_of_area" ? (
+                  <div className="sm:col-span-2 rounded-lg bg-amber-50 p-3 ring-1 ring-inset ring-amber-200">
+                    <label htmlFor="sched-ooa" className="flex items-start gap-2 text-xs font-semibold text-amber-900">
+                      <input
+                        id="sched-ooa"
+                        type="checkbox"
+                        checked={schedConfirmOoa}
+                        disabled={schedBusy}
+                        onChange={(e) => setSchedConfirmOoa(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded border-amber-300 text-amber-700 focus:ring-amber-500"
+                      />
+                      This lead is outside your service areas. Book it anyway as an exception.
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  disabled={schedBusy}
+                  onClick={() => void submitSchedule()}
+                  className="h-9 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
+                >
+                  {schedBusy ? "Booking…" : "Book appointment"}
+                </button>
+                <div aria-live="polite" className="min-h-5 text-sm">
+                  {schedMsg?.kind === "error" ? <p className="text-red-700" role="alert">{schedMsg.text}</p> : null}
+                  {schedMsg?.kind === "dup" ? <p className="text-amber-800" role="status">{schedMsg.text}</p> : null}
+                </div>
+              </div>
+            </section>
+          ) : null}
         </div>
         {/* Status + follow-ups + linked conversations */}
         <div className="space-y-4 self-start">
