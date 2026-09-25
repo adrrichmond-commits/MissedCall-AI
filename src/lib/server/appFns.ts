@@ -31,6 +31,7 @@ import {
 } from "~/lib/server/revenue";
 import { buildRoiPanelData } from "~/lib/server/roiPanel";
 import type { RoiPanelData } from "~/lib/server/roi";
+import { buildAnalyticsPageData, type AnalyticsPageData } from "~/lib/server/reportingReads";
 import type { LeadStatus } from "~/db/schema";
 import { TAKEOVER_REASON_LABELS, type TakeoverReasonKey } from "~/lib/takeover";
 
@@ -1122,81 +1123,20 @@ export const getAppointmentsFn = createServerFn({ method: "GET" }).handler(
 // ---------------------------------------------------------------------------
 // Analytics (honest aggregates over the business's own rows)
 // ---------------------------------------------------------------------------
+// P5-5: the payload type + body now live in reportingReads.ts (the SSR plain
+// read); the RPC wrapper below shares that one body. The type is re-exported
+// as AnalyticsData for the existing importers (analytics route + tests).
 
-export interface AnalyticsData {
-  leadsByStatus: Record<string, number>;
-  leadsBySource: Record<string, number>;
-  appointmentsByWeekday: number[];
-  conversationsByStatus: Record<string, number>;
-  totalLeads: number;
-  totalMessages: number;
-  openPipelineValueCents: number;
-  /** Missed-call recovery funnel — real aggregates, never synthetic. */
-  recovery: {
-    /** Leads whose source is a captured missed call (all time). */
-    missedCalls: number;
-    /** Of those, leads that got a captured SMS conversation (recovered). */
-    recovered: number;
-    /** Of those, leads that were won (status booked/completed). */
-    booked: number;
-  };
-  /** P3-D: recovered-revenue summary (same engine as the dashboard card). */
-  revenue: DashboardData["revenue"];
-  /** P3-D: ordered captured-calls funnel stages. */
-  funnel: { key: string; label: string; count: number }[];
-  /**
-   * P5-2: the ROI panel payload (same builder as the dashboard) — estimated
-   * jobs/revenue/ROI with estimate labels + pricing-config subscription cost.
-   */
-  roi: RoiPanelData;
-}
+export type AnalyticsData = AnalyticsPageData;
 
 export const getAnalyticsFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<AppResult<AnalyticsData>> => {
     try {
       const ctx = await requireAuth();
-      const businessId = ctx.business.id;
-      const [leadsByStatus, leadsBySource, appointmentsByWeekday, conversationsByStatus, totalMessages, pipeline, recovery] =
-        await Promise.all([
-          q.countLeadsByStatus(businessId),
-          q.countLeadsBySource(businessId),
-          q.countAppointmentsByWeekday(businessId),
-          q.countConversationsByStatus(businessId),
-          q.countMessages(businessId),
-          q.sumOpenPipelineValue(businessId),
-          q.missedCallRecoveryStats(businessId),
-        ]);
-      const totalLeads = Object.values(leadsByStatus).reduce((a, b) => a + b, 0);
-      const [revenue, funnel, roi] = await Promise.all([
-        q.revenueMetrics(businessId, ctx.business.timezone),
-        q.revenueFunnelCounts(businessId),
-        buildRoiPanelData(businessId),
-      ]);
-      return {
-        ok: true,
-        data: {
-          leadsByStatus,
-          leadsBySource,
-          appointmentsByWeekday,
-          conversationsByStatus,
-          totalLeads,
-          totalMessages,
-          openPipelineValueCents: pipeline,
-          recovery,
-          revenue: {
-            week: revenue.week,
-            month: revenue.month,
-            allTime: revenue.allTime,
-            revenuePerLeadCents: revenue.revenuePerLeadCents,
-            conversionRate: revenue.conversionRate,
-            recoveryRate: revenue.recoveryRate,
-            appointmentsPerRecoveredLead: revenue.appointmentsPerRecoveredLead,
-            hasRecovered: revenue.allTime.recoveredCents > 0 || revenue.allTime.wonLeads > 0,
-          },
-          funnel: funnelStages(funnel),
-          roi,
-        },
-      };
+      // One body with the SSR path (reportingReads.buildAnalyticsPageData) —
+      // the RPC wrapper only serves browser-initiated refreshes.
+      const data = await buildAnalyticsPageData(ctx.business.id, ctx.business.timezone ?? null);
+      return { ok: true, data };
     } catch (e) {
       return authErrorToResult(e);
     }

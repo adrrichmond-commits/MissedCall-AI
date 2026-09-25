@@ -40,6 +40,7 @@ export const WORKFLOW_KEYS = [
   "welcome",
   "payment_failure",
   "human_takeover",
+  "performance_digest",
 ] as const;
 
 export type WorkflowKey = (typeof WORKFLOW_KEYS)[number];
@@ -116,6 +117,13 @@ export const WORKFLOW_CATALOG: Record<WorkflowKey, WorkflowMeta> = {
       "Texts you when the AI flags a conversation for a human (emergency, upset customer, unclear request, pricing/policy) so you can take over from the inbox.",
     recipient: "owner",
   },
+  performance_digest: {
+    key: "performance_digest",
+    label: "Performance digest (owner)",
+    description:
+      "Your daily or weekly recap: leads captured, jobs booked, and estimated revenue recovered — only when something actually happened. Turn digests on in Settings.",
+    recipient: "owner",
+  },
 };
 
 /** Per-workflow editable configuration (stored in businesses.settings). */
@@ -188,6 +196,8 @@ export const DEFAULT_WORKFLOW_TEMPLATES: Record<WorkflowKey, string> = {
     "{businessName}: your MissedCall AI payment of {amountDue} failed. Update billing in your dashboard to keep your AI running.",
   human_takeover:
     "{businessName}: your AI assistant needs you on a text thread — {serviceNeed}. Open your dashboard inbox to take over the conversation.",
+  performance_digest:
+    "{businessName} recap — {periodLabel}: {digestSummary} Details in your dashboard.",
 };
 
 export const DEFAULT_WORKFLOW_CONFIGS: Record<WorkflowKey, WorkflowConfig> = {
@@ -200,6 +210,7 @@ export const DEFAULT_WORKFLOW_CONFIGS: Record<WorkflowKey, WorkflowConfig> = {
   welcome: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.welcome, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
   payment_failure: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.payment_failure, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
   human_takeover: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.human_takeover, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
+  performance_digest: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.performance_digest, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
 };
 
 export const DEFAULT_SMS_WORKFLOWS_CONFIG: SmsWorkflowsConfig = {
@@ -228,6 +239,10 @@ export type WorkflowTemplateVars = Partial<{
   serviceNeed: string;
   appointmentTime: string;
   amountDue: string;
+  /** performance_digest only: the human period label ("Last week (Sep 15–21)"). */
+  periodLabel: string;
+  /** performance_digest only: the one-line period summary (estimate-labeled). */
+  digestSummary: string;
 }>;
 
 export const WORKFLOW_TEMPLATE_VARIABLES = [
@@ -236,6 +251,8 @@ export const WORKFLOW_TEMPLATE_VARIABLES = [
   "serviceNeed",
   "appointmentTime",
   "amountDue",
+  "periodLabel",
+  "digestSummary",
 ] as const;
 
 /** Human labels for the settings UI template editor. */
@@ -245,6 +262,8 @@ export const WORKFLOW_TEMPLATE_VARIABLE_LABELS: Record<(typeof WORKFLOW_TEMPLATE
   serviceNeed: "Service need",
   appointmentTime: "Appointment time",
   amountDue: "Amount due",
+  periodLabel: "Digest period label",
+  digestSummary: "Digest summary line",
 };
 
 function cleanVar(value: string | undefined): string {
@@ -550,6 +569,7 @@ export const NOTIFICATION_CHANNEL_EVENT_TYPES = [
   "payment_failed",
   "emergency",
   "takeover_needed",
+  "performance_digest",
 ] as const;
 
 export type NotificationChannelEventType = (typeof NOTIFICATION_CHANNEL_EVENT_TYPES)[number];
@@ -561,6 +581,7 @@ export const NOTIFICATION_CHANNEL_LABELS: Record<NotificationChannelEventType, s
   payment_failed: "Payment failed",
   emergency: "Emergency escalation",
   takeover_needed: "AI needs human takeover",
+  performance_digest: "Performance digest",
 };
 
 export interface NotificationChannelSettings {
@@ -578,6 +599,7 @@ export const DEFAULT_NOTIFICATION_CHANNEL_SETTINGS: NotificationChannelSettings 
     payment_failed: true,
     emergency: true,
     takeover_needed: true,
+    performance_digest: true,
   },
   sms: {
     new_lead: true,
@@ -586,6 +608,7 @@ export const DEFAULT_NOTIFICATION_CHANNEL_SETTINGS: NotificationChannelSettings 
     payment_failed: true,
     emergency: true,
     takeover_needed: true,
+    performance_digest: false,
   },
 };
 
@@ -639,4 +662,5 @@ export const OWNER_SMS_WORKFLOW_FOR_EVENT: Record<NotificationChannelEventType, 
   payment_failed: "payment_failure",
   emergency: "emergency_escalation",
   takeover_needed: "human_takeover",
+  performance_digest: "performance_digest",
 };

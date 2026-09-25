@@ -60,7 +60,7 @@ export interface PeriodBounds {
 }
 
 /** Local calendar read of an instant in a zone (null when the zone is unusable). */
-function localDateParts(
+export function localDateParts(
   date: Date,
   timezone: string,
 ): { y: number; m: number; d: number; dow: number } | null {
@@ -106,7 +106,7 @@ function offsetAt(date: Date, timezone: string): string {
  * to the later occurrence; the day-granularity sums tolerate the 1h skew on
  * the two mornings a year this can happen.
  */
-function localMidnightUtc(y: number, m: number, d: number, timezone: string, sample: Date): Date {
+export function localMidnightUtc(y: number, m: number, d: number, timezone: string, sample: Date): Date {
   const pad = (n: number): string => String(n).padStart(2, "0");
   const iso = `${y}-${pad(m)}-${pad(d)}T00:00:00`;
   let instant = new Date(iso + offsetAt(sample, timezone));

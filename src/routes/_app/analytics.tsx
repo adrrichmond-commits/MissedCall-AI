@@ -1,10 +1,21 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { getAnalyticsFn } from "~/lib/server/appFns";
+import { getAnalyticsFn, type AnalyticsData } from "~/lib/server/appFns";
 import { ErrorState, PageHeader, PageLoading } from "~/components/app/pageStates";
 import { formatMoney } from "~/lib/format";
+import type { PerformanceReport, PeriodKey, ReportingCounts, TrendDirection } from "~/lib/server/reporting";
 
 export const Route = createFileRoute("/_app/analytics")({
-  loader: async () => {
+  loader: async (): Promise<AnalyticsData> => {
+    // SSR: plain server read (createServerFn in a loader compiles to an SSR
+    // RPC self-call through the hosting proxy that intermittently fails —
+    // sessionReads/adminReads postmortem). Browser: the RPC wrapper.
+    if (import.meta.env.SSR) {
+      const { analyticsPageDataForSession } = await import("~/lib/server/reportingReads");
+      const data = await analyticsPageDataForSession();
+      if (!data) throw new Error("Not signed in.");
+      return data;
+    }
     const res = await getAnalyticsFn();
     if (!res.ok) throw new Error(res.error);
     return res.data;
@@ -101,6 +112,9 @@ function AnalyticsPage() {
         title="Analytics"
         description="Straightforward aggregates over your leads, conversations, and appointments — no invented trends."
       />
+
+      {/* P5-5: performance over time — daily/weekly/monthly with trends */}
+      <PerformanceSection report={data.performance} />
 
       {/* Primary value metric: missed-call recovery funnel (all real rows) */}
       <section  className="rounded-xl border border-brand-200 bg-white p-5" aria-label="Missed calls recovered">
@@ -276,5 +290,129 @@ function AnalyticsPage() {
         )}
       </section>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P5-5: performance over time — daily / weekly / monthly periods with trend
+// direction vs the previous period. Measured counts stay measured; the money
+// figures carry the P5-2 "Estimate" chip contract (report.estimateFlags).
+// ---------------------------------------------------------------------------
+
+const PERFORMANCE_PERIODS: { key: PeriodKey; label: string }[] = [
+  { key: "daily", label: "Daily" },
+  { key: "weekly", label: "Weekly" },
+  { key: "monthly", label: "Monthly" },
+];
+
+const PERFORMANCE_METRICS: { key: keyof ReportingCounts; label: string }[] = [
+  { key: "callsReceived", label: "Calls received" },
+  { key: "missedCalls", label: "Missed calls captured" },
+  { key: "autoResponded", label: "Auto-responded" },
+  { key: "customerReplies", label: "Customer replies" },
+  { key: "leadsCaptured", label: "Leads captured" },
+  { key: "appointmentsBooked", label: "Appointments booked" },
+];
+
+function TrendArrow({ direction }: { direction: TrendDirection }) {
+  const glyph = direction === "up" ? "▲" : direction === "down" ? "▼" : "—";
+  return (
+    <span
+      className={`ml-2 text-xs ${direction === "up" ? "text-green-600" : direction === "down" ? "text-amber-600" : "text-slate-400"}`}
+      title="vs the previous period"
+    >
+      {glyph}
+    </span>
+  );
+}
+
+/** The visible P5-2-contract "Estimate" chip — always rendered for money. */
+function EstimateChip() {
+  return (
+    <span
+      data-testid="performance-estimate-chip"
+      className="ml-1.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+    >
+      Estimate
+    </span>
+  );
+}
+
+function PerformanceSection({ report }: { report: PerformanceReport }) {
+  const [tab, setTab] = useState<PeriodKey>("weekly");
+  const period = report.periods[tab];
+  const roi = period.roiMultiple;
+  return (
+    <section className="rounded-xl border border-brand-200 bg-white p-5" aria-label="Performance over time">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">Performance over time</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Measured counts with the trend direction vs the previous period — counts are real rows;
+            money figures are estimates.
+          </p>
+        </div>
+        <div className="flex rounded-lg border border-slate-200 p-0.5" role="tablist" aria-label="Reporting period">
+          {PERFORMANCE_PERIODS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              role="tab"
+              aria-selected={tab === p.key}
+              onClick={() => setTab(p.key)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                tab === p.key ? "bg-brand-500 text-white" : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+        {PERFORMANCE_METRICS.map((m) => (
+          <div key={m.key}>
+            <p className="text-xs text-slate-500">
+              {m.label}
+              <TrendArrow direction={period.trends[m.key]} />
+            </p>
+            <p className="text-xl font-bold text-slate-900">{period.current[m.key]}</p>
+            <p className="text-[11px] text-slate-400">prev: {period.previous[m.key]}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 border-t border-slate-100 pt-3">
+        <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
+          <div>
+            <p className="text-xs text-slate-500">
+              Jobs won
+              <TrendArrow direction={period.trends.jobsWon} />
+              <EstimateChip />
+            </p>
+            <p className="text-xl font-bold text-slate-900">{period.current.jobsWon}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">
+              Revenue recovered
+              <TrendArrow direction={period.trends.revenueRecoveredCents} />
+              <EstimateChip />
+            </p>
+            <p className="text-xl font-bold text-aqua-700">{formatMoney(period.current.revenueRecoveredCents)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">
+              ROI vs subscription
+              <EstimateChip />
+            </p>
+            <p className="text-xl font-bold text-slate-900">{roi == null ? "—" : `${roi}×`}</p>
+            <p className="text-[11px] text-slate-400">
+              {roi == null ? "free trial — no subscription cost yet" : "period revenue ÷ monthly plan cost"}
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
