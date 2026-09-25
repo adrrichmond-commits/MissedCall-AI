@@ -58,7 +58,7 @@ jobs:
 
       - name: Unit suites (mock-based, no external services)
         run: |
-          suites="admin billing classify crm email kb pipeline revenue sms sms-workflows stripe voice infra"
+          suites="admin billing classify crm email kb pipeline revenue sms sms-workflows stripe voice infra p4v"
           for t in $suites; do
             echo "::group::bun scripts/test-$t.ts"
             if bun "scripts/test-$t.ts"; then
