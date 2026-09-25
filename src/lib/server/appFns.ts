@@ -12,6 +12,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireActiveWrite, requireAuth } from "~/lib/server/auth.server";
 import type { AuthContext } from "~/lib/server/auth";
 import { authErrorToResult } from "~/lib/server/sessionFns";
+import { sendCustomerWorkflow } from "~/lib/server/smsWorkflowTriggers";
+import { formatAppointmentTime } from "~/lib/server/workflowTime";
 import * as q from "~/db/queries";
 import {
   LEAD_LIFECYCLE_STATUSES,
@@ -675,6 +677,28 @@ export const confirmAppointmentFn = createServerFn({ method: "POST" })
           });
         } catch {
           // Notification failure must not fail the business write.
+        }
+        // P4-S: appointment_confirmation customer text through the workflow
+        // engine — safeguarded (opt-out, quiet hours, caps) and honest. The
+        // send NEVER blocks the confirmation write.
+        try {
+          if (updated.leadId) {
+            const lead = await q.getLead(businessId, updated.leadId);
+            if (lead) {
+              await sendCustomerWorkflow(businessId, "appointment_confirmation", {
+                to: lead.contactPhone,
+                leadId: lead.id,
+                appointmentId: updated.id,
+                vars: {
+                  customerName: lead.contactName ?? undefined,
+                  serviceNeed: updated.serviceSummary,
+                  appointmentTime: formatAppointmentTime(updated.scheduledAt, ctx.business.timezone),
+                },
+              });
+            }
+          }
+        } catch {
+          // Workflow failure must not fail the business write.
         }
         return { ok: true, data: { appointmentId: updated.id, status: updated.status } };
       } catch (e) {

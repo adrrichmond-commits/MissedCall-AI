@@ -672,3 +672,48 @@ export interface SystemError {
   createdAt: Date;
   updatedAt: Date;
 }
+
+// ---------------------------------------------------------------------------
+// P4-S: SMS workflow safeguard state (migration 017). Configuration lives in
+// businesses.settings (src/lib/smsWorkflows.ts); these rows are the STATE the
+// safeguards are computed from + the send audit trail.
+// ---------------------------------------------------------------------------
+export type SmsWorkflowRecipient = "customer" | "owner";
+export type SmsWorkflowSendOutcome =
+  | "sent"
+  | "failed"
+  | "disabled"
+  | "not_configured"
+  | "opted_out"
+  | "invalid_number"
+  | "quiet_hours"
+  | "duplicate_suppressed"
+  | "cap_reached"
+  | "limit_reached"
+  | "no_recipient";
+
+export interface SmsWorkflowSend {
+  id: string;
+  businessId: string;
+  workflowKey: string;
+  phone: string;
+  recipient: SmsWorkflowRecipient;
+  outcome: SmsWorkflowSendOutcome;
+  suppressReason: string | null;
+  body: string | null;
+  providerSid: string | null;
+  leadId: string | null;
+  appointmentId: string | null;
+  conversationId: string | null;
+  createdAt: Date;
+}
+
+export interface SmsInvalidNumber {
+  id: string;
+  businessId: string;
+  phone: string;
+  reason: string;
+  detectedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}

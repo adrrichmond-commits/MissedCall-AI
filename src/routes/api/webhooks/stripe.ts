@@ -1,4 +1,6 @@
-/**
+import * as q from "~/db/queries";
+import { notifyOwnerViaSms, queueOwnerNotificationEmail } from "~/lib/server/smsWorkflowTriggers";
+import { formatCentsAsUsd } from "~/lib/server/workflowTime";/**
  * Stripe webhook (Phase 2 build #5) — POST /api/webhooks/stripe
  *
  * Receives Stripe event deliveries. HONESTY RULE: without
@@ -47,7 +49,7 @@ import {
   recordBillingEvent,
 } from "~/db/queries/stripe";
 import type { StripeEventStore } from "~/lib/server/stripeWebhook";
-import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
+
 
 function jsonError(status: number, code: string, message: string): Response {
   return Response.json({ error: code, message }, { status });
@@ -80,18 +82,30 @@ const neonStore: StripeEventStore = {
       plan: args.plan,
     }),
   createPaymentFailedNotification: (args) =>
-    createPaymentFailedNotification(args.businessId, args.payload).then((notificationId) => {
+    createPaymentFailedNotification(args.businessId, args.payload).then(async (notificationId) => {
       // Fire-and-forget owner email (build #6) for this business-critical
       // event — no-op unless the provider is configured; never blocks the
       // webhook's in-app insert (a queue crash is swallowed inside the hook).
       if (notificationId) {
-        queueNotificationEmail({
-          businessId: args.businessId,
-          notificationId,
-          type: "payment_failed",
-          payload: args.payload,
-          store: notificationEmailStore,
-        });
+        // P4-S: owner email gated by the email channel toggle, owner SMS via
+        // the payment_failure workflow (gated by the SMS channel toggle).
+        try {
+          const bizRow = await q.getBusiness(args.businessId).catch(() => null);
+          queueOwnerNotificationEmail({
+            businessId: args.businessId,
+            businessSettings: (bizRow as unknown as { settings?: Record<string, unknown> } | null)?.settings ?? null,
+            notificationId,
+            type: "payment_failed",
+            payload: args.payload,
+          });
+          void notifyOwnerViaSms(args.businessId, "payment_failed", {
+            amountDue: formatCentsAsUsd(
+              typeof args.payload.amountDue === "number" ? args.payload.amountDue : null,
+            ),
+          });
+        } catch (hookErr) {
+          console.log("[stripe] owner notification hooks failed (webhook unaffected): " + String(hookErr));
+        }
       }
       return notificationId;
     }),
