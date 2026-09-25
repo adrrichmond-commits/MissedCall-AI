@@ -29,6 +29,16 @@ export interface CountWindow {
 const KEY_RE = /^[a-z0-9_]+$/;
 
 /**
+ * Build the row key the db layer will hand back for an alias. src/db.ts
+ * camelCases every returned key (snake_case -> camelCase), so the SQL alias
+ * `leads_day_current` arrives as `leadsDayCurrent` — a raw snake_case read is
+ * always undefined and silently zeroes the count (the same P3-H isolation-suite
+ * trap revenue.ts documents). Every read below goes through this helper.
+ */
+const col = (prefix: string, key: string): string =>
+  `${prefix}_${key}`.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+
+/**
  * Per-window counts for the business. Keys echo the input windows; every
  * count passes the engine's sanitizers, so a window with no rows yields an
  * all-zero ReportingCounts (never undefined, never NaN).
@@ -44,35 +54,48 @@ export async function periodCountsForWindows(
   }
   const db = sql();
 
-  // params[0] = businessId, then (from, to) pairs in window order.
-  const params: unknown[] = [businessId];
-  const bind = (w: CountWindow): { f: string; t: string } => {
-    params.push(w.from, w.to);
-    const f = `$${params.length - 1}`;
-    const t = `$${params.length}`;
-    return { f, t };
+  // Each of the four SELECTs gets its OWN params array: $1 = businessId, then
+  // (from, to) pairs in window order. Sharing one array across statements made
+  // later statements reference $14+ while $2..$13 stayed unreferenced —
+  // Postgres must infer a type for every parameter up to the highest number
+  // referenced, and a never-referenced parameter has none
+  // (NeonDbError: could not determine data type of parameter $2).
+  const makeBind = (): {
+    params: unknown[];
+    bind: (w: CountWindow) => { f: string; t: string };
+  } => {
+    const params: unknown[] = [businessId];
+    const bind = (w: CountWindow): { f: string; t: string } => {
+      params.push(w.from, w.to);
+      const f = `$${params.length - 1}`;
+      const t = `$${params.length}`;
+      return { f, t };
+    };
+    return { params, bind };
   };
 
   // --- Leads: captured + missed-call (callsReceived mirrors missedCalls
   // until the voice receptionist lands — the documented revenue.ts convention).
+  const { params: leadParams, bind: leadBind } = makeBind();
   const leadSelect = windows
     .map((w) => {
-      const { f, t } = bind(w);
+      const { f, t } = leadBind(w);
       return `count(*) FILTER (WHERE created_at >= ${f} AND created_at < ${t}) AS leads_${w.key},
         count(*) FILTER (WHERE source = 'missed_call' AND created_at >= ${f} AND created_at < ${t}) AS missed_${w.key}`;
     })
     .join(", ");
   const leadRows = await db.query(
     `SELECT ${leadSelect} FROM leads WHERE business_id = $1`,
-    params,
+    leadParams,
   );
   const lr = leadRows[0] as unknown as Record<string, unknown>;
 
   // --- Conversations: AI-handled (≥1 outbound AI reply) + customer replies
   // (≥1 inbound message). Windowed on the conversation's capture time.
+  const { params: convParams, bind: convBind } = makeBind();
   const convSelect = windows
     .map((w) => {
-      const { f, t } = bind(w);
+      const { f, t } = convBind(w);
       return `count(*) FILTER (
           WHERE c.created_at >= ${f} AND c.created_at < ${t}
             AND EXISTS (SELECT 1 FROM messages m
@@ -90,50 +113,52 @@ export async function periodCountsForWindows(
     .join(", ");
   const convRows = await db.query(
     `SELECT ${convSelect} FROM conversations c WHERE c.business_id = $1`,
-    params,
+    convParams,
   );
   const cr = convRows[0] as unknown as Record<string, unknown>;
 
   // --- Appointments booked (created) in the window.
+  const { params: apptParams, bind: apptBind } = makeBind();
   const apptSelect = windows
     .map((w) => {
-      const { f, t } = bind(w);
+      const { f, t } = apptBind(w);
       return `count(*) FILTER (WHERE created_at >= ${f} AND created_at < ${t}) AS appt_${w.key}`;
     })
     .join(", ");
   const apptRows = await db.query(
     `SELECT ${apptSelect} FROM appointments WHERE business_id = $1`,
-    params,
+    apptParams,
   );
   const ar = apptRows[0] as unknown as Record<string, unknown>;
 
   // --- Won jobs + estimated recovered revenue: pipeline_value_cents of won
   // leads converted in the window (the SAME money source as revenue.ts /
   // roi.ts — an ESTIMATE, labeled upstream by the engine's estimateFlags).
+  const { params: wonParams, bind: wonBind } = makeBind();
   const wonSelect = windows
     .map((w) => {
-      const { f, t } = bind(w);
+      const { f, t } = wonBind(w);
       return `count(*) FILTER (WHERE converted_at >= ${f} AND converted_at < ${t}) AS won_${w.key},
         COALESCE(SUM(pipeline_value_cents) FILTER (WHERE converted_at >= ${f} AND converted_at < ${t}), 0) AS cents_${w.key}`;
     })
     .join(", ");
   const wonRows = await db.query(
     `SELECT ${wonSelect} FROM leads WHERE business_id = $1 AND status = 'won' AND pipeline_value_cents IS NOT NULL`,
-    params,
+    wonParams,
   );
   const wr = wonRows[0] as unknown as Record<string, unknown>;
 
   const out: Record<string, ReportingCounts> = {};
   for (const w of windows) {
     out[w.key] = sanitizeCounts({
-      callsReceived: toNumber(lr[`missed_${w.key}`]),
-      missedCalls: toNumber(lr[`missed_${w.key}`]),
-      autoResponded: toNumber(cr[`auto_${w.key}`]),
-      customerReplies: toNumber(cr[`replies_${w.key}`]),
-      leadsCaptured: toNumber(lr[`leads_${w.key}`]),
-      appointmentsBooked: toNumber(ar[`appt_${w.key}`]),
-      jobsWon: toNumber(wr[`won_${w.key}`]),
-      revenueRecoveredCents: toNumber(wr[`cents_${w.key}`]),
+      callsReceived: toNumber(lr[col("missed", w.key)]),
+      missedCalls: toNumber(lr[col("missed", w.key)]),
+      autoResponded: toNumber(cr[col("auto", w.key)]),
+      customerReplies: toNumber(cr[col("replies", w.key)]),
+      leadsCaptured: toNumber(lr[col("leads", w.key)]),
+      appointmentsBooked: toNumber(ar[col("appt", w.key)]),
+      jobsWon: toNumber(wr[col("won", w.key)]),
+      revenueRecoveredCents: toNumber(wr[col("cents", w.key)]),
     });
   }
   return out;

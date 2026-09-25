@@ -186,6 +186,12 @@ checkTrue("digest copy: never shows raw cents", !summary.includes("12000"));
 
 const STAMP = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 const businessIds: string[] = [];
+// Pre-clean: the end-of-run cleanup only runs when the suite finishes, so a
+// crashed earlier run leaves its P55 businesses (and their rows) behind —
+// remove them first or the cleanup check below counts ghosts.
+for (const row of await query(`SELECT id FROM businesses WHERE name LIKE 'P55 %'`)) {
+  await query(`DELETE FROM businesses WHERE id = $1`, [(row as { id: string }).id]);
+}
 async function seedBusiness(name: string, plan: string): Promise<string> {
   const { business } = await createBusinessWithOwner({
     businessName: name,
@@ -198,6 +204,18 @@ async function seedBusiness(name: string, plan: string): Promise<string> {
   }
   businessIds.push(business.id);
   return business.id;
+}
+/**
+ * Engine windows in the BUSINESS's own timezone. businesses.timezone defaults
+ * to 'America/Chicago' (migrations/001) — seeding previous-period rows from
+ * UTC windows put them OUTSIDE the engine's Chicago-anchored windows (in
+ * September, Chicago's "yesterday"/"last week" begin 5h AFTER UTC's), which
+ * zeroed the weekly-previous counts and the digest content gate.
+ */
+async function engineWindows(businessId: string): Promise<{ tz: string; windows: ReturnType<typeof computeReportingWindows> }> {
+  const biz = (await q.getBusiness(businessId)) as unknown as { timezone?: string } | null;
+  const tz = biz?.timezone ?? "UTC";
+  return { tz, windows: computeReportingWindows(NOW, tz) };
 }
 async function seedLead(businessId: string, opts: { source: string; createdAt: Date; wonAt?: Date; cents?: number }): Promise<string> {
   const rows = await query(
@@ -224,7 +242,7 @@ async function seedConversation(businessId: string, leadId: string, opts: { crea
   if (opts.inbound) {
     await query(
       `INSERT INTO messages (business_id, conversation_id, direction, body, status, sent_at)
-       VALUES ($1, $2, 'inbound', 'Yes, my sink is leaking.', 'received', $3)`,
+       VALUES ($1, $2, 'inbound', 'Yes, my sink is leaking.', 'delivered', $3)`,
       [businessId, convId, opts.createdAt],
     );
   }
@@ -248,13 +266,20 @@ const B1 = await seedBusiness("P55 Report Full", "starter");
   await seedConversation(B1, l1, { createdAt: new Date(NOW.getTime() - 2 * HOUR), aiReply: true, inbound: true });
   await seedConversation(B1, l2, { createdAt: new Date(NOW.getTime() - 2 * HOUR), aiReply: false, inbound: false });
   await seedAppointment(B1, l1, new Date(NOW.getTime() - HOUR));
-  // Previous periods (seeded INSIDE the engine's own windows — date-robust):
+  // Previous periods (seeded INSIDE the engine's own windows — date-robust,
+  // in the BUSINESS's timezone via engineWindows):
   // last month: 1 won job 30000¢; last week: 2 leads; yesterday: 1 lead.
-  const l5 = await seedLead(B1, { source: "web_form", createdAt: new Date(windows.monthly.previous.from.getTime() + HOUR), wonAt: new Date(windows.monthly.previous.from.getTime() + 2 * HOUR), cents: 30000 });
+  const { windows: w1 } = await engineWindows(B1);
+  const l5 = await seedLead(B1, { source: "web_form", createdAt: new Date(w1.monthly.previous.from.getTime() + HOUR), wonAt: new Date(w1.monthly.previous.from.getTime() + 2 * HOUR), cents: 30000 });
   void l5;
-  await seedLead(B1, { source: "missed_call", createdAt: new Date(windows.weekly.previous.from.getTime() + HOUR) });
-  await seedLead(B1, { source: "web_form", createdAt: new Date(windows.weekly.previous.from.getTime() + 2 * HOUR) });
-  await seedLead(B1, { source: "missed_call", createdAt: new Date(windows.daily.previous.from.getTime() + HOUR) });
+  await seedLead(B1, { source: "missed_call", createdAt: new Date(w1.weekly.previous.from.getTime() + HOUR) });
+  await seedLead(B1, { source: "web_form", createdAt: new Date(w1.weekly.previous.from.getTime() + 2 * HOUR) });
+  // Weekly current holds 4 of B1's leads (3 today + 1 yesterday-seed), so
+  // weekly previous needs 5 for the "down" trend assertion to be truthful.
+  await seedLead(B1, { source: "missed_call", createdAt: new Date(w1.weekly.previous.from.getTime() + 3 * HOUR) });
+  await seedLead(B1, { source: "web_form", createdAt: new Date(w1.weekly.previous.from.getTime() + 4 * HOUR) });
+  await seedLead(B1, { source: "missed_call", createdAt: new Date(w1.weekly.previous.from.getTime() + 5 * HOUR) });
+  await seedLead(B1, { source: "missed_call", createdAt: new Date(w1.daily.previous.from.getTime() + HOUR) });
 }
 const rep1 = await buildPerformanceReportFor(B1);
 checkTrue("B1: payload carries the estimateFlags contract", rep1.estimateFlags.jobsWon && rep1.estimateFlags.revenueRecovered && rep1.estimateFlags.roiMultiple);
@@ -270,7 +295,7 @@ checkEq("B1 daily: revenueRecoveredCents (ESTIMATE)", rep1.periods.daily.current
 checkEq("B1 daily trend: leads up vs yesterday (1)", rep1.periods.daily.trends.leadsCaptured, "up");
 checkEq("B1 monthly previous: jobsWon", rep1.periods.monthly.previous.jobsWon, 1);
 checkEq("B1 monthly previous: revenue", rep1.periods.monthly.previous.revenueRecoveredCents, 30000);
-checkEq("B1 weekly previous: leads", rep1.periods.weekly.previous.leadsCaptured, 2);
+checkEq("B1 weekly previous: leads", rep1.periods.weekly.previous.leadsCaptured, 5);
 checkEq("B1 weekly trend: leads down vs last week (2)", rep1.periods.weekly.trends.leadsCaptured, "down");
 checkEq("B1 ROI: month revenue (12000) ÷ starter cost (14900) → 0.8×", rep1.periods.monthly.roiMultiple, 0.8);
 
@@ -299,10 +324,14 @@ async function setDigest(businessId: string, config: { enabled: boolean; frequen
   await q.updateBusinessSettings(businessId, { ...settings, performanceDigest: config });
 }
 const B3 = await seedBusiness("P55 Digest Empty", "trial");
+// Enabled NOW (before sweep1) so the first sweep sees an enabled-but-empty
+// business — the no-content anti-spam gate — not the default "disabled".
+await setDigest(B3, { enabled: true, frequency: "daily" });
 
 // Content for B2's digest window (yesterday): one lead + one won job.
-await seedLead(B2, { source: "missed_call", createdAt: new Date(windows.daily.previous.from.getTime() + HOUR) });
-await seedLead(B2, { source: "web_form", createdAt: new Date(windows.daily.previous.from.getTime() + 2 * HOUR), wonAt: new Date(windows.daily.previous.from.getTime() + 3 * HOUR), cents: 5000 });
+const { tz: tz2, windows: w2 } = await engineWindows(B2);
+await seedLead(B2, { source: "missed_call", createdAt: new Date(w2.daily.previous.from.getTime() + HOUR) });
+await seedLead(B2, { source: "web_form", createdAt: new Date(w2.daily.previous.from.getTime() + 2 * HOUR), wonAt: new Date(w2.daily.previous.from.getTime() + 3 * HOUR), cents: 5000 });
 await setDigest(B2, { enabled: true, frequency: "daily" });
 
 const { runPerformanceDigestSweep } = await import("../src/lib/server/digestSweep");
@@ -311,7 +340,7 @@ const item2 = sweep1.items.find((i) => i.businessId === B2);
 checkEq("sweep: B2 digest SENT on the first ping", item2?.outcome, "sent");
 const notifs = await query(`SELECT type, payload FROM notifications WHERE business_id = $1 AND type = 'performance_digest'`, [B2]);
 checkEq("sweep: in-app performance_digest notification recorded", notifs.length, 1);
-checkTrue("sweep: notification carries the periodKey + estimate flags", (notifs[0] as { payload: { periodKey?: string; estimateFlags?: Record<string, boolean> } }).payload.periodKey === digestWindow(NOW, "daily", "UTC").periodKey);
+checkTrue("sweep: notification carries the periodKey + estimate flags", (notifs[0] as { payload: { periodKey?: string; estimateFlags?: Record<string, boolean> } }).payload.periodKey === digestWindow(NOW, "daily", tz2).periodKey);
 checkTrue("sweep: payload estimate flags all true", Object.values((notifs[0] as { payload: { estimateFlags?: Record<string, boolean> } }).payload.estimateFlags ?? {}).every(Boolean));
 
 const sweep2 = await runPerformanceDigestSweep(NOW);
@@ -328,7 +357,8 @@ checkEq("sweep: B3 (enabled, but NO content yesterday) skipped — no empty spam
 // Enable B3 + point its digest at a period with content → sends; then flip
 // B3's frequency back and verify the min-interval cap blocks a rapid re-send.
 await setDigest(B3, { enabled: true, frequency: "daily" });
-await seedLead(B3, { source: "missed_call", createdAt: new Date(windows.daily.previous.from.getTime() + HOUR) });
+const { windows: w3 } = await engineWindows(B3);
+await seedLead(B3, { source: "missed_call", createdAt: new Date(w3.daily.previous.from.getTime() + HOUR) });
 const sweep3 = await runPerformanceDigestSweep(NOW);
 checkEq("sweep: B3 digest SENT once content exists", sweep3.items.find((i) => i.businessId === B3)?.outcome, "sent");
 checkEq(
