@@ -39,6 +39,7 @@
  */
 
 import type { MessageClassification } from "~/db/schema";
+import { sanitizeAiTone, tonePromptDirective } from "~/lib/aiTone";
 import { classifyInboundText } from "./classify";
 import {
   KB_VERSION,
@@ -105,6 +106,14 @@ export interface PipelineInput {
    * behavior, not a gap.
    */
   emergencyInstructions?: string | null;
+  /**
+   * P5-3: the owner's AI tone choice (settings.aiTone, sanitized by
+   * src/lib/aiTone.ts). STYLE ONLY — appended to the system prompt AFTER the
+   * guardrails, explicitly subordinated to them; `professional`/null/undefined
+   * adds nothing. A tone change reaches the next AI turn immediately (the
+   * settings blob is re-read by textBack on every inbound message).
+   */
+  aiTone?: string | null;
 }
 
 /** Where the produced reply text came from — stamped as `replySource`. */
@@ -216,7 +225,10 @@ export function buildServiceCatalogContext(): string {
  * weakened by them. Exported for tests; production and tests see
  * byte-identical prompts.
  */
-export function buildClassifierSystemPrompt(ownerInstructions?: string | null): string {
+export function buildClassifierSystemPrompt(
+  ownerInstructions?: string | null,
+  aiTone?: string | null,
+): string {
   const prompt = [
     buildSystemPrompt(),
     "",
@@ -246,6 +258,10 @@ export function buildClassifierSystemPrompt(ownerInstructions?: string | null): 
       instructions,
     );
   }
+  // P5-3: the owner's tone directive — style only, appended last so it can
+  // never displace the guardrails, and explicitly subordinated to them.
+  const tone = tonePromptDirective(sanitizeAiTone(aiTone));
+  if (tone) prompt.push("", tone);
   return prompt.join("\n");
 }
 
@@ -278,8 +294,13 @@ function llmStr(v: unknown): string | null {
  * unreachable, times out, or returns anything unparseable — the caller then
  * falls back to the rules tier for THIS turn (honest degradation).
  */
-async function llmClassify(llm: PipelineLlm, body: string, ownerInstructions?: string | null): Promise<MessageClassification | null> {
-  const raw = await llm.complete(buildClassifierSystemPrompt(ownerInstructions), body, { maxTokens: 500, timeoutMs: 15_000 });
+async function llmClassify(
+  llm: PipelineLlm,
+  body: string,
+  ownerInstructions?: string | null,
+  aiTone?: string | null,
+): Promise<MessageClassification | null> {
+  const raw = await llm.complete(buildClassifierSystemPrompt(ownerInstructions, aiTone), body, { maxTokens: 500, timeoutMs: 15_000 });
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
@@ -366,7 +387,7 @@ export async function runClassificationPipeline(input: PipelineInput): Promise<P
 
   if (input.llm) {
     try {
-      const parsed = await llmClassify(input.llm, body, input.emergencyInstructions);
+      const parsed = await llmClassify(input.llm, body, input.emergencyInstructions, input.aiTone);
       if (parsed) {
         base = parsed;
         tier = "llm";

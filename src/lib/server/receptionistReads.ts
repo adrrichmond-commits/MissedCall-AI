@@ -19,6 +19,7 @@ import { getSessionFromRequest } from "~/lib/server/auth.server";
 import { isLlmConfigured } from "~/lib/server/llm";
 import { isSmsConfigured } from "~/lib/server/sms";
 import { receptionistConfigFromSettings, type ReceptionistConfig } from "~/lib/voice/receptionistConfig";
+import { readAiToneValue } from "~/lib/aiTone";
 
 export interface ReceptionistStudioView {
   role: "owner" | "manager" | "employee";
@@ -29,6 +30,14 @@ export interface ReceptionistStudioView {
   config: ReceptionistConfig;
   /** ISO timestamp of the last studio save, null when never saved. */
   savedAt: string | null;
+  /**
+   * P5-3: the owner's AI tone for the TEXTING assistant (settings.aiTone,
+   * sanitized). Editable here so both AI surfaces are one save away; the
+   * voice flow's spoken lines are scripted, so tone steers the SMS assistant.
+   */
+  aiTone: "professional" | "friendly" | "casual" | "direct";
+  /** True once the owner saved an AI tone at least once (aiToneSavedAt). */
+  aiToneSaved: boolean;
   /**
    * Honest provider status: the Twilio messaging env vars are present. Real
    * customer messaging is STILL gated on A2P campaign approval — the studio
@@ -53,6 +62,8 @@ export async function receptionistStudioView(): Promise<ReceptionistStudioView |
     businessPhone: b.phone ?? null,
     config: receptionistConfigFromSettings(b.settings),
     savedAt,
+    aiTone: readAiToneValue(settings.aiTone) ?? "professional",
+    aiToneSaved: typeof settings.aiToneSavedAt === "string",
     smsProviderConfigured: isSmsConfigured(),
     llmConfigured: isLlmConfigured(),
   };

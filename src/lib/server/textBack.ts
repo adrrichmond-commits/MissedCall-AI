@@ -55,6 +55,7 @@ import {
 import { trackFunnel } from "./funnelTrack";
 import { recordClassificationTurn, markEmergencyEscalated } from "./qualityMonitor";
 import { applyPromptOverlay } from "./promptOverrides";
+import { readAiToneValue, type AiTone } from "~/lib/aiTone";
 
 /** What actually happened with the text-back for one captured lead. */
 export type TextBackOutcome =
@@ -453,6 +454,12 @@ async function runInboundPipeline(
     emergencyInstructions: readEmergencyInstructions(
       (business as unknown as { settings?: Record<string, unknown> } | null)?.settings,
     ),
+    // P5-3: the owner's AI tone reaches the NEXT turn's system prompt — read
+    // fresh from the settings blob on every inbound message, so a change in
+    // Settings takes effect immediately (no redeploy, no restart).
+    aiTone: readAiToneValue(
+      (business as unknown as { settings?: Record<string, unknown> } | null)?.settings?.aiTone,
+    ),
   };
   return runClassificationPipeline(input);
 }
@@ -477,6 +484,21 @@ export function readEmergencyInstructions(bizSettings: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * P5-3: extract the owner's AI tone from the business settings jsonb. Stored
+ * FLAT (`settings.aiTone`) by saveAiToneFn; garbage/absent → null (the
+ * pipeline then runs the default professional voice, which adds no prompt
+ * directive). Pure + exported for the P5-3 suite to prove the settings → AI
+ * handoff, exactly like readEmergencyInstructions above it.
+ */
+export function readAiTone(bizSettings: unknown): AiTone | null {
+  const blob =
+    bizSettings && typeof bizSettings === "object"
+      ? (bizSettings as Record<string, unknown>)
+      : {};
+  return readAiToneValue(blob.aiTone);
 }
 
 /**

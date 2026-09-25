@@ -7,6 +7,7 @@ import {
   deleteServiceFn,
   getSettingsFn,
   removeServiceAreaFn,
+  saveAiToneFn,
   saveBusinessHoursFn,
   saveEmergencyPrefsFn,
   saveNotificationPrefsFn,
@@ -18,6 +19,10 @@ import { PageHeader, PageLoading, ErrorState, EmptyState } from "~/components/ap
 import { Badge } from "~/components/ui/Badge";
 import { Field, TextInput } from "~/components/ui/Form";
 import { Button } from "~/components/ui/Button";
+import {
+  AI_TONE_OPTIONS,
+  type AiTone,
+} from "~/lib/aiTone";
 import {
   COMMON_TIMEZONES,
   DAY_LABELS,
@@ -114,7 +119,7 @@ function SettingsPage() {
     <div>
       <PageHeader
         title="Settings"
-        description="Business info, hours, services, and service areas — editable by owners and managers."
+        description="One place for everything: business info, hours, services, areas, the AI assistant, notifications, and links to the surfaces that manage the rest."
         actions={canEdit ? undefined : <Badge tone="slate">Read-only access</Badge>}
       />
       {!canEdit ? (
@@ -127,8 +132,10 @@ function SettingsPage() {
         <HoursSection view={view} refresh={refresh} canEdit={canEdit} />
         <ServicesSection view={view} refresh={refresh} canEdit={canEdit} />
         <AreasSection view={view} refresh={refresh} canEdit={canEdit} />
+        <AiAssistantSection view={view} refresh={refresh} canEdit={canEdit} />
         <NotificationsSection view={view} refresh={refresh} canEdit={canEdit} />
         <EmergencySection view={view} refresh={refresh} canEdit={canEdit} />
+        <LinkedSurfacesSection />
         {view.role === "owner" ? <SubscriptionSection /> : null}
       </div>
     </div>
@@ -785,6 +792,137 @@ function AreasSection({
 }
 
 // ---------------------------------------------------------------------------
+// 4b. AI assistant (P5-3) — tone control; deeper AI shaping lives in the
+// Receptionist studio, linked rather than duplicated.
+// ---------------------------------------------------------------------------
+function AiAssistantSection({
+  view,
+  refresh,
+  canEdit,
+}: {
+  view: SettingsView;
+  refresh: () => Promise<unknown>;
+  canEdit: boolean;
+}) {
+  const [tone, setTone] = useState<AiTone>(view.aiTone);
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  const onSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSave({ kind: "saving" });
+    const res = await saveAiToneFn({ data: { aiTone: tone } });
+    if (res.ok) {
+      setSave({ kind: "saved", message: res.data.message });
+      await refresh();
+    } else {
+      setSave({ kind: "error", message: res.error });
+    }
+  };
+
+  return (
+    <SectionCard
+      title="AI assistant"
+      description="How the AI sounds when it texts your customers. Changes apply to the very next AI reply — no redeploy, no waiting."
+    >
+      <form onSubmit={onSave} className="space-y-4">
+        <fieldset>
+          <legend className="text-sm font-medium text-slate-800">Tone</legend>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {AI_TONE_OPTIONS.map((option) => {
+              const selected = tone === option.value;
+              return (
+                <label
+                  key={option.value}
+                  className={
+                    "flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition " +
+                    (selected
+                      ? "border-brand-500 bg-brand-50 ring-1 ring-inset ring-brand-200"
+                      : "border-slate-200 bg-white hover:bg-slate-50")
+                  }
+                >
+                  <input
+                    type="radio"
+                    name="ai-tone"
+                    className="mt-0.5 h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-500"
+                    checked={selected}
+                    disabled={!canEdit}
+                    onChange={() => setTone(option.value)}
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-900">{option.label}</span>
+                    <span className="block text-xs text-slate-500">{option.description}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+        <p className="rounded-xl bg-slate-50 px-4 py-3 text-xs text-slate-600 ring-1 ring-inset ring-slate-200">
+          Tone only changes <em>how</em> the AI phrases things. It can never change the safety rules:
+          emergency scripts, the no-prices policy, and honest routing to a human always win.
+          {!view.aiToneSaved ? " You have not customized the tone yet — Professional is in effect." : ""}
+        </p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SaveFeedback state={save} />
+          <a href="/_app/receptionist" className="text-sm font-medium text-brand-700 hover:text-brand-800">
+            Shape what the AI says → Receptionist studio
+          </a>
+          {canEdit ? (
+            <Button type="submit" disabled={save.kind === "saving"}>
+              {save.kind === "saving" ? "Saving…" : "Save AI tone"}
+            </Button>
+          ) : null}
+        </div>
+      </form>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4c. Linked surfaces (P5-3 consolidation) — everything a plumber controls
+// lives either on this page or ONE linked surface; never a second copy.
+// ---------------------------------------------------------------------------
+function LinkedSurfacesSection() {
+  const links: { href: string; title: string; description: string }[] = [
+    {
+      href: "/_app/receptionist",
+      title: "Receptionist studio",
+      description: "The voice AI: greeting, persona, FAQs, transfer number, and call policies.",
+    },
+    {
+      href: "/appointments",
+      title: "Appointments",
+      description: "Requested and booked jobs. The AI proposes times inside your hours and service area — both configured above.",
+    },
+    {
+      href: "/onboarding",
+      title: "Phone & providers",
+      description: "Connection status for texting, email, and the AI language provider.",
+    },
+  ];
+  return (
+    <SectionCard
+      title="Manage elsewhere"
+      description="Shortcuts to the surfaces that own the rest of your setup."
+    >
+      <ul className="grid gap-3 sm:grid-cols-3">
+        {links.map((l) => (
+          <li key={l.href}>
+            <a
+              href={l.href}
+              className="flex h-full flex-col rounded-xl border border-slate-200 p-4 transition hover:border-brand-300 hover:bg-brand-50/40"
+            >
+              <span className="text-sm font-semibold text-slate-900">{l.title}</span>
+              <span className="mt-1 block text-xs text-slate-500">{l.description}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 5. Notifications (honest placeholder — saved, delivery pending provider setup)
 // ---------------------------------------------------------------------------
 function NotificationsSection({
@@ -968,7 +1106,7 @@ function SubscriptionSection() {
   return (
     <SectionCard
       title="Subscription"
-      description="Owner-only. Plan and billing management arrive with Stripe in Phase 2."
+      description="Owner-only. Plan, checkout, and billing history are live on the Billing page."
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-slate-700">

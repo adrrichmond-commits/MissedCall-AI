@@ -30,6 +30,7 @@ import {
   type OnboardingState,
   type SettingsView,
 } from "~/lib/settingsTypes";
+import { AI_TONE_OPTIONS, readAiToneValue } from "~/lib/aiTone";
 
 export type SettingsResult<T> = { ok: true; data: T } | { ok: false; status: 400 | 401 | 403 | 404; error: string };
 
@@ -304,6 +305,9 @@ export const getSettingsFn = createServerFn({ method: "GET" }).handler(async ():
         notificationPrefs: prefs,
         emergencyPrefs: sanitizeEmergencyPrefs(bizSettings),
         emergencyPrefsSaved: typeof bizSettings.emergencyPrefsSavedAt === 'string',
+        // P5-3: the owner's AI tone (flat settings key, sanitized read).
+        aiTone: readAiToneValue(bizSettings.aiTone) ?? "professional",
+        aiToneSaved: typeof bizSettings.aiToneSavedAt === "string",
         // P4-O: the greeting callers actually hear (studio config > default),
         // resolved by the same pure helper the voice path uses.
         receptionistGreeting: resolveReceptionistGreeting(
@@ -688,6 +692,37 @@ export const saveEmergencyPrefsFn = createServerFn({ method: "POST" })
       };
       await q.updateBusinessSettings(businessId, settings);
       return { ok: true, data: { message: "Emergency preferences saved." } };
+    } catch (e) {
+      return validationToResult(e);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// Write: AI tone (P5-3) — one flat key on businesses.settings, consumed by the
+// classification pipeline on the NEXT AI turn (textBack readAiToneValue).
+// ---------------------------------------------------------------------------
+export const saveAiToneFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { aiTone?: unknown })
+  .handler(async ({ data }): Promise<SettingsResult<{ message: string; aiTone: string }>> => {
+    try {
+      const ctx = await requireActiveWrite("owner", "manager");
+      const businessId = ctx.business.id;
+      // Whitelist against the same option list the UI renders — an unknown
+      // value is a 400, never a silent store of garbage.
+      const raw = typeof data?.aiTone === "string" ? data.aiTone.trim().toLowerCase() : "";
+      const option = AI_TONE_OPTIONS.find((o) => o.value === raw);
+      if (!option) {
+        throw new ValidationError("Choose one of the listed AI tones.", "aiTone");
+      }
+      const current = await q.getBusiness(businessId);
+      if (!current) return { ok: false, status: 404, error: "Business not found." };
+      const settings = {
+        ...((current as unknown as { settings?: Record<string, unknown> }).settings ?? {}),
+        aiTone: option.value,
+        aiToneSavedAt: new Date().toISOString(),
+      };
+      await q.updateBusinessSettings(businessId, settings);
+      return { ok: true, data: { message: `AI tone set to ${option.label}. It applies to the next AI reply.`, aiTone: option.value } };
     } catch (e) {
       return validationToResult(e);
     }
