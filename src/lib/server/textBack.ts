@@ -246,6 +246,25 @@ export async function handleInboundSms(args: {
   // AI-handled inbound SMS). Idempotent; failure never affects the flow.
   void trackFunnel(args.businessId, "first_recovered_call");
 
+  // P5-1 JOURNEY FIX: the customer replying IS the missed-call lead. The
+  // reply's conversation row is created by findOrCreateConversationForPhone
+  // with no lead link, so the text-back lead and the AI thread stayed
+  // disconnected forever — the dashboard showed an unlinked conversation and
+  // emergency escalation could not re-stamp the lead (priority stayed
+  // normal while the owner got paged). Backfill the link, best-effort,
+  // guarded to conversations that have no lead yet.
+  try {
+    const convRow = await q.getConversation(args.businessId, args.conversationId);
+    if (convRow && convRow.leadId == null) {
+      const leadByPhone = await q.getLatestLeadByPhone(args.businessId, args.from);
+      if (leadByPhone) {
+        await q.updateConversation(args.businessId, args.conversationId, { leadId: leadByPhone.id });
+      }
+    }
+  } catch (linkErr) {
+    console.log("[textback] conversation→lead link failed (message stored, flow continues): " + String(linkErr));
+  }
+
   // 2. Command handling (STOP persistence is the compliance gate).
   const command = parseSmsCommand(args.body);
   let status: "unclassified" | "delivered" = "unclassified";

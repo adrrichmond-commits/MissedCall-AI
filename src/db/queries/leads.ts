@@ -434,3 +434,20 @@ export async function deleteLead(businessId: string, leadId: string): Promise<bo
   const rows = await db`DELETE FROM leads WHERE id = ${leadId} AND business_id = ${businessId} RETURNING id`;
   return rows.length > 0;
 }
+
+/**
+ * P5-1 journey fix: the customer texting back IS the missed-call lead.
+ * Resolve the business's most recent lead for a phone number (the text-back
+ * capture creates leads keyed by contact_phone; reply conversations are
+ * created by findOrCreateConversationForPhone with no lead link).
+ */
+export async function getLatestLeadByPhone(businessId: string, phone: string): Promise<Lead | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT * FROM leads
+    WHERE business_id = ${businessId} AND contact_phone = ${phone}
+    ORDER BY created_at DESC
+    LIMIT 1`;
+  return (rows[0] as unknown as Lead | undefined) ?? null;
+}
