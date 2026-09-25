@@ -293,7 +293,14 @@ function Terms() {
         </div>
         <div className="mt-12 border-t border-slate-200 pt-6 text-slate-600">
           <h2 className="text-lg font-semibold text-slate-900">16. Contact</h2>
-          <p className="mt-3">MissedCall AI — missedcall-ai-ab7414dd@ctomail.io</p>
+          <p className="mt-3">
+            The MissedCall AI service is operated by MissedCall AI (sole
+            proprietorship, registered with Twilio as MISSEDCALL AI, operator
+            Austin Richmond). Questions about these terms:{" "}
+            <span className="font-medium text-slate-700">
+              missedcall-ai-ab7414dd@ctomail.io
+            </span>
+          </p>
         </div>
       </main>
       <footer className="border-t border-slate-200 bg-slate-50">

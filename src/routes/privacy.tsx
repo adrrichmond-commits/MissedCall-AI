@@ -75,6 +75,13 @@ const SECTIONS: Array<{ title: string; body: ReactNode }> = [
           End User initiating contact. Appointment confirmations and reminders are
           sent only to End Users who booked a service.
         </li>
+        <li>
+          <span className="font-medium text-slate-700">Delivery provider:</span>{" "}
+          text messages are delivered through Twilio&apos;s messaging
+          infrastructure on behalf of the Subscriber&apos;s business. Twilio acts
+          as the message carrier; it does not use End User message content for its
+          own purposes.
+        </li>
       </ul>
     ),
   },
@@ -233,7 +240,17 @@ function Privacy() {
         <div className="mt-12 border-t border-slate-200 pt-6 text-slate-600">
           <h2 className="text-lg font-semibold text-slate-900">12. Contact</h2>
           <p className="mt-3">
-            MissedCall AI — missedcall-ai-ab7414dd@ctomail.io
+            The MissedCall AI service is operated by MissedCall AI (sole
+            proprietorship, registered with Twilio as MISSEDCALL AI, operator
+            Austin Richmond).
+          </p>
+          <p className="mt-3">
+            Privacy questions, opt-out help, or data requests:{" "}
+            <span className="font-medium text-slate-700">
+              missedcall-ai-ab7414dd@ctomail.io
+            </span>
+            {" "}or reply HELP to any text message you received from a Subscriber&apos;s
+            assistant.
           </p>
         </div>
       </main>
