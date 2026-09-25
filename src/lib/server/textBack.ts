@@ -246,6 +246,25 @@ export async function handleInboundSms(args: {
   // AI-handled inbound SMS). Idempotent; failure never affects the flow.
   void trackFunnel(args.businessId, "first_recovered_call");
 
+  // P5-1 JOURNEY FIX: the customer replying IS the missed-call lead. The
+  // reply's conversation row is created by findOrCreateConversationForPhone
+  // with no lead link, so the text-back lead and the AI thread stayed
+  // disconnected forever — the dashboard showed an unlinked conversation and
+  // emergency escalation could not re-stamp the lead (priority stayed
+  // normal while the owner got paged). Backfill the link, best-effort,
+  // guarded to conversations that have no lead yet.
+  try {
+    const convRow = await q.getConversation(args.businessId, args.conversationId);
+    if (convRow && convRow.leadId == null) {
+      const leadByPhone = await q.getLatestLeadByPhone(args.businessId, args.from);
+      if (leadByPhone) {
+        await q.updateConversation(args.businessId, args.conversationId, { leadId: leadByPhone.id });
+      }
+    }
+  } catch (linkErr) {
+    console.log("[textback] conversation→lead link failed (message stored, flow continues): " + String(linkErr));
+  }
+
   // 2. Command handling (STOP persistence is the compliance gate).
   const command = parseSmsCommand(args.body);
   let status: "unclassified" | "delivered" = "unclassified";
@@ -426,8 +445,38 @@ async function runInboundPipeline(
     timezone: business?.timezone ?? null,
     hours: hours && hours.length > 0 ? hours : null,
     llm,
+    // P5-1: the owner's emergency instructions reach the AI — the settings
+    // surface promises "the AI follows these on emergency calls", so the
+    // pipeline must actually receive them (LLM tier appends them to the
+    // system prompt; the rules tier's KB safety scripts are verbatim by
+    // design and use free text only for context, never for output).
+    emergencyInstructions: readEmergencyInstructions(
+      (business as unknown as { settings?: Record<string, unknown> } | null)?.settings,
+    ),
   };
   return runClassificationPipeline(input);
+}
+
+/**
+ * P5-1: extract the owner's emergency instructions from the business settings
+ * jsonb. saveEmergencyPrefsFn persists the prefs FLAT on the settings blob
+ * (`settings.emergencyInstructions`); the nested `emergencyPrefs.*` shape is
+ * also accepted for forward-compatibility. Pure + tolerant of every malformed
+ * shape — a broken settings blob yields null, never a throw. Exported for the
+ * journey suite to prove the settings → AI handoff.
+ */
+export function readEmergencyInstructions(bizSettings: unknown): string | null {
+  const s = (bizSettings ?? {}) as {
+    emergencyInstructions?: unknown;
+    emergencyPrefs?: { emergencyInstructions?: unknown };
+  };
+  const raw =
+    typeof s.emergencyInstructions === "string"
+      ? s.emergencyInstructions
+      : s.emergencyPrefs?.emergencyInstructions;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**

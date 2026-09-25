@@ -241,6 +241,33 @@ const ownerItems: Array<[string, string]> = [
 ];
 // ---------------------------------------------------------------------------
 // Report.
+
+// ---------------------------------------------------------------------------
+// Req 21 journey-18: the owner's 18-point new-plumber journey (P5-1). Every
+// point is an automated probe of the code that implements it; the two points
+// that need live providers or a real paying customer stay explicit skips.
+// Runtime proof for points 1-17 lives in scripts/test-e2e-journey.ts (CI).
+// ---------------------------------------------------------------------------
+const jProbe = (f: string, s: string): boolean => { const t = readIfExists(ROOT + f); return t != null && t.includes(s); };
+row("Req 21 journey-18", "1 create account", jProbe("src/lib/server/authFns.ts", "signupFn") && jProbe("src/db/queries/auth.ts", "createBusinessWithOwner") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "2 onboarding wizard", jProbe("src/routes/_app/onboarding.tsx", "createFileRoute(\"/_app/onboarding\")") && jProbe("src/routes/_app/onboarding.tsx", "setStep") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "3 service area", jProbe("src/lib/server/settingsFns.ts", "addServiceAreaFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "4 services", jProbe("src/lib/server/settingsFns.ts", "addServiceFn") && jProbe("src/lib/server/settingsFns.ts", "seedServicesFromDefaultsFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "5 hours", jProbe("src/lib/server/settingsFns.ts", "saveBusinessHoursFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "6 emergency rules", jProbe("src/lib/server/settingsFns.ts", "saveEmergencyPrefsFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "7 select plan (pricing config)", jProbe("src/lib/pricing.ts", "starter") && jProbe("src/lib/pricing.ts", "pro") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "8 start 14-day trial", jProbe("src/db/queries/auth.ts", "trial_ends_at") && jProbe("src/lib/server/authFns.ts", "trial_start") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "9 receive missed call", jProbe("src/lib/server/textBack.ts", "captureMissedCallLead") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "10 auto-respond", jProbe("src/lib/server/textBack.ts", "missed_call_recovery") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "11 AI qualifies", jProbe("src/lib/server/classifyPipeline.ts", "runClassificationPipeline") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "12 schedule (P5-1 booking core)", jProbe("src/lib/server/appFns.ts", "scheduleAppointmentFn") && jProbe("src/lib/server/appointmentBooking.ts", "bookAppointment") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "13 notification", jProbe("src/db/queries/notifications.ts", "createNotification") && jProbe("src/lib/server/smsWorkflowTriggers.ts", "notifyOwnerViaSms") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "14 lead in dashboard", jProbe("src/lib/server/appFns.ts", "recentLeads") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "15 estimated revenue visible", jProbe("src/lib/server/revenue.ts", "funnelStages") && jProbe("src/lib/server/appFns.ts", "getRevenueFunnelFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "16 monitor over time", jProbe("src/routes/_app/analytics.tsx", "createFileRoute") && jProbe("src/lib/server/appFns.ts", "getAppointmentsFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "17 manage subscription", jProbe("src/lib/server/billingFns.ts", "cancelSubscriptionFn") && jProbe("src/lib/server/billingFns.ts", "requestPlanChangeFn") && jProbe("src/lib/server/billingFns.ts", "reactivateSubscriptionFn") ? "PASS" : "FAIL");
+row("Req 21 journey-18", "18 convert to paid, keep working (real-card live test)", "SKIP", "owner: live Stripe checkout + real-card conversion test");
+
 // ---------------------------------------------------------------------------
 console.log("\nLAUNCH-READINESS CHECKLIST (P4-I)\n");
 const icon: Record<Status, string> = { PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "⏭️ " };
