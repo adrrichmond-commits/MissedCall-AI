@@ -248,7 +248,6 @@ const ownerItems: Array<[string, string]> = [
 // that need live providers or a real paying customer stay explicit skips.
 // Runtime proof for points 1-17 lives in scripts/test-e2e-journey.ts (CI).
 // ---------------------------------------------------------------------------
-const journey = (f: string) => readIfExists(ROOT + f);
 const jProbe = (f: string, s: string): boolean => { const t = readIfExists(ROOT + f); return t != null && t.includes(s); };
 row("Req 21 journey-18", "1 create account", jProbe("src/lib/server/authFns.ts", "signupFn") && jProbe("src/db/queries/auth.ts", "createBusinessWithOwner") ? "PASS" : "FAIL");
 row("Req 21 journey-18", "2 onboarding wizard", jProbe("src/routes/_app/onboarding.tsx", "OnboardingState") ? "PASS" : "FAIL");
@@ -267,7 +266,7 @@ row("Req 21 journey-18", "14 lead in dashboard", jProbe("src/lib/server/appFns.t
 row("Req 21 journey-18", "15 estimated revenue visible", jProbe("src/lib/server/revenue.ts", "funnelStages") && jProbe("src/lib/server/appFns.ts", "getRevenueFunnelFn") ? "PASS" : "FAIL");
 row("Req 21 journey-18", "16 monitor over time", jProbe("src/routes/_app/analytics.tsx", "createFileRoute") && jProbe("src/lib/server/appFns.ts", "getAppointmentsFn") ? "PASS" : "FAIL");
 row("Req 21 journey-18", "17 manage subscription", jProbe("src/lib/server/billingFns.ts", "cancelSubscriptionFn") && jProbe("src/lib/server/billingFns.ts", "requestPlanChangeFn") && jProbe("src/lib/server/billingFns.ts", "reactivateSubscriptionFn") ? "PASS" : "FAIL");
-row("Req 21 journey-18", "18 convert to paid, keep working (real-card live test)", "SKIP - owner: live Stripe checkout + real-card conversion test");
+row("Req 21 journey-18", "18 convert to paid, keep working (real-card live test)", "SKIP", "owner: live Stripe checkout + real-card conversion test");
 
 // ---------------------------------------------------------------------------
 console.log("\nLAUNCH-READINESS CHECKLIST (P4-I)\n");
