@@ -20,6 +20,7 @@ export const NOTIFICATION_TYPES = [
   "appointment_confirmed",
   "appointment_declined",
   "payment_failed",
+  "ai_loop_detected",
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];

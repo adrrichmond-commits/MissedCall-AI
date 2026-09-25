@@ -597,3 +597,12 @@ export function smsChannelEnabled(channels: NotificationChannelSettings, notific
   const event = channelEventFor(notificationType);
   return event !== null && channels.sms[event];
 }
+
+/** Which owner workflow sends the SMS for a channel event (null = none wired). */
+export const OWNER_SMS_WORKFLOW_FOR_EVENT: Record<NotificationChannelEventType, WorkflowKey | null> = {
+  new_lead: "new_lead",
+  appointment_requested: null,
+  appointment_confirmed: null,
+  payment_failed: "payment_failure",
+  emergency: "emergency_escalation",
+};

@@ -24,10 +24,9 @@
  *
  * Server-only: imports the query layer and the env-gated providers.
  */
-import { normalizePhone, parseSmsCommand } from "~/lib/smsCommands";
+import { parseSmsCommand } from "~/lib/smsCommands";
 import { SMS_TEMPLATES, renderSmsTemplate } from "~/lib/smsTemplates";
 import * as q from "~/db/queries";
-import { notificationEmailStore, queueNotificationEmail } from "~/lib/server/emailDelivery";
 import type { CreateLeadInput } from "~/db/queries/leads";
 import type { Lead } from "~/db/schema";
 import { isLlmConfigured, llmComplete, readLlmConfig } from "./llm";
@@ -43,6 +42,14 @@ import {
   type PipelineResult,
 } from "./classifyPipeline";
 import { maybeCreateFollowUpTaskForNewLead } from "./followUps";
+import { sendWorkflowSms, type WorkflowEngineIo } from "./smsWorkflowEngine";
+import { sanitizeSmsWorkflowsConfig } from "~/lib/smsWorkflows";
+import {
+  evaluateThreadAiLoop,
+  handLoopedThreadToHuman,
+  notifyOwnerViaSms,
+  queueOwnerNotificationEmail,
+} from "./smsWorkflowTriggers";
 
 /** What actually happened with the text-back for one captured lead. */
 export type TextBackOutcome =
@@ -50,7 +57,13 @@ export type TextBackOutcome =
   | "opted_out"
   | "not_configured"
   | "limit_reached"
-  | "failed";
+  | "failed"
+  // P4-S engine outcomes surfaced honestly (workflow off, safeguards, etc):
+  | "disabled"
+  | "duplicate_suppressed"
+  | "quiet_hours"
+  | "invalid_number"
+  | "no_recipient";
 
 export interface TextBackResult {
   outcome: TextBackOutcome;
@@ -66,8 +79,8 @@ export interface TextBackResult {
   gate: GateDecision | null;
 }
 
-function textBackResult(outcome: TextBackOutcome, reason: string | null, gate: GateDecision | null = null): TextBackResult {
-  return { outcome, sid: null, reason, gate };
+function textBackResult(outcome: TextBackOutcome, reason: string | null, gate: GateDecision | null = null, sid: string | null = null): TextBackResult {
+  return { outcome, sid, reason, gate };
 }
 
 export class TextBackError extends Error {
@@ -98,8 +111,12 @@ export async function captureMissedCallLead(
   const lead = await q.createLead(businessId, input);
 
   // 2. In-app new_lead notification (always, matching build #3 semantics).
+  //    P4-S: the owner's EMAIL and SMS channels for new_lead are gated by the
+  //    business-level notification-channel controls (in-app stays on).
   let textBack: TextBackResult = textBackResult("not_configured", "Twilio not configured");
   try {
+    const businessRow = await q.getBusiness(businessId).catch(() => null);
+    const bizSettings = (businessRow as unknown as { settings?: Record<string, unknown> } | null)?.settings ?? {};
     const payload = {
       leadId: lead.id,
       leadName: lead.contactName,
@@ -112,20 +129,25 @@ export async function captureMissedCallLead(
       type: "new_lead",
       payload,
     });
-    // Fire-and-forget email for the owner (build #6) — no-op unless the
-    // email provider is configured; never blocks or fails the capture.
-    queueNotificationEmail({
+    // Fire-and-forget owner email + SMS (P4-S channel controls) — never block
+    // or fail the capture.
+    queueOwnerNotificationEmail({
       businessId,
+      businessSettings: bizSettings,
       notificationId: notification.id,
       type: "new_lead",
       payload,
-      store: notificationEmailStore,
     });
+    void notifyOwnerViaSms(businessId, "new_lead", {
+      customerName: lead.contactName ?? "a customer",
+      serviceNeed: lead.serviceNeed ?? "service request",
+    }, { leadId: lead.id });
   } catch {
     // Notification failure must not fail the capture.
   }
 
-  // 3. Text-back attempt — env-gated, opt-out-checked, failures honest.
+  // 3. Text-back attempt — through the P4-S workflow engine (the ONE send
+  //    path): env-gated, opt-out-checked, safeguarded, failures honest.
   textBack = await sendTextBack(businessId, businessName, lead);
 
   // 4. P3-C: the capture follow-up task ('lead_new', due next business day
@@ -136,62 +158,46 @@ export async function captureMissedCallLead(
 }
 
 /**
- * Send the text-back for an already-created missed_call lead. Honesty rules:
- *   - opted-out phones NEVER receive anything;
- *   - 'not_configured' and 'opted_out' are silent skips (expected states);
- *   - only 'sent' may ever be reported as a send.
+ * Send the text-back for an already-created missed_call lead.
+ *
+ * P4-S: this is now a thin mapping over the ONE workflow engine — the
+ * missed_call_recovery workflow carries the opt-out rule, the invalid-number
+ * stop, quiet hours, the duplicate cooldown, the per-customer cap, the plan
+ * usage gate, and honest recording. The engine's outcome maps 1:1 onto the
+ * legacy TextBackResult so every existing caller keeps its semantics:
+ *   - 'not_configured' and 'opted_out' remain silent skips (expected states);
+ *   - only 'sent' may ever be reported as a send;
+ *   - 'limit_reached' keeps the typed gate decision for the upgrade prompt.
  */
 export async function sendTextBack(
   businessId: string,
-  businessName: string,
+  _businessName: string,
   lead: Lead,
+  io?: WorkflowEngineIo,
 ): Promise<TextBackResult> {
-  if (!isSmsConfigured()) {
-    return textBackResult("not_configured", "Twilio not configured");
-  }
-  const phone = normalizeForSend(lead.contactPhone);
-  if (!phone) {
-    return textBackResult("failed", "Lead phone is not a textable number");
-  }
-  if (await q.isSmsOptedOut(businessId, phone)) {
-    return textBackResult("opted_out", "Customer has opted out (STOP) - never texted");
-  }
-  // P3-F usage gate: the text-back is a plan-metered send. At the limit the
-  // caller gets a typed limit_reached result (with the honest plan-named
-  // message) instead of a silent drop. This is a first-contact text, not an
-  // emergency reply, so emergency bypass does NOT apply here.
-  const business = await q.getBusiness(businessId).catch(() => null);
-  if (business) {
-    const ctx = await loadPlanUsageContext(businessId, anchorForBusiness(business));
-    const gate = gateAction({ ctx, axis: "sms_per_month" });
-    if (!gate.allowed) {
-      console.log("[textback] sms limit reached for business " + businessId + " - text-back withheld, upgrade prompt returned");
-      return textBackResult("limit_reached", gate.message, gate);
-    }
-  }
-  const body = renderSmsTemplate(SMS_TEMPLATES.textBack, businessName);
-  try {
-    const result = await sendSms({ to: phone, body });
-    if (business) {
-      const ctx = await loadPlanUsageContext(businessId, anchorForBusiness(business));
-      await meterAction({ businessId, ctx, axis: "sms_per_month" });
-    }
-    return { outcome: "sent", sid: result.sid, reason: null, gate: null };
-  } catch (err) {
-    // Real failure (network, Twilio rejection). Lead survives; state is honest.
-    // No usage is metered for a failed send.
-    const reason = err instanceof Error ? err.message : String(err);
-    console.log("[textback] send failed for lead " + lead.id + ": " + reason);
-    // P4-I: a final delivery failure is RECORDED (system_errors + log), never
-    // silently swallowed — the failure is visible on /admin/health.
-    captureSystemError({
-      source: "sms_delivery",
-      businessId,
-      message: "Text-back delivery failed for lead " + lead.id + ": " + reason,
-      detail: { leadId: lead.id, phone, flow: "text_back", outcome: "failed" },
-    });
-    return textBackResult("failed", reason);
-  }
+  const outcome = await sendWorkflowSms({
+    businessId,
+    workflowKey: "missed_call_recovery",
+    recipient: "customer",
+    to: lead.contactPhone,
+    leadId: lead.id,
+    ...(io ? { io } : {}),
+  });
+  const map: Record<string, TextBackOutcome> = {
+    sent: "sent",
+    failed: "failed",
+    disabled: "disabled",
+    not_configured: "not_configured",
+    opted_out: "opted_out",
+    invalid_number: "invalid_number",
+    quiet_hours: "quiet_hours",
+    duplicate_suppressed: "duplicate_suppressed",
+    cap_reached: "limit_reached",
+    limit_reached: "limit_reached",
+    no_recipient: "no_recipient",
+  };
+  const mapped = map[outcome.outcome] ?? "failed";
+  return textBackResult(mapped, outcome.reason, outcome.gate, outcome.sid);
 }
 
 /**
@@ -300,7 +306,7 @@ export async function handleInboundSms(args: {
     }
 
     // 4. Emergency auto-escalation (fail toward emergency; never a parallel
-    //    notification system — the in-app row + fire-and-forget email ARE the
+    //    notification system — the in-app row + owner email/SMS ARE the
     //    notification path, same as new_lead).
     if (pipeline.classification.urgency === "emergency") {
       await escalateEmergency(args, pipeline);
@@ -309,13 +315,44 @@ export async function handleInboundSms(args: {
     // 5. Auto-reply: only the pipeline's screened/KB-sourced text, and never
     //    to an opted-out phone. Fire-and-forget: reply failure is logged and
     //    never fails the stored classification.
+    //
+    //    P4-S AI-LOOP PREVENTION: before auto-replying, count the consecutive
+    //    inbound replies that echo our own outbound text. At the configured
+    //    limit the engine stops auto-responding and hands the thread to a
+    //    human (ai_loop_detected notification). Classification + emergency
+    //    escalation above still run — a loop never silences an emergency.
     if (pipeline.reply && pipeline.reply.text) {
-      const replyGate = await tryPipelineReply(args, pipeline.reply.text, {
-        // EMERGENCY EXCEPTION (pricing.ts): emergency replies are never
-        // rate-limited — a flooded basement is not silenced by a counter.
-        emergency: pipeline.classification.urgency === "emergency",
-      });
-      if (replyGate) turnGate = replyGate;
+      let aiLoopMax = 3;
+      let loopDecision: { suppress: boolean; echoCount: number } | null = null;
+      try {
+        const bizRow = await q.getBusiness(args.businessId).catch(() => null);
+        const wfConfig = sanitizeSmsWorkflowsConfig(
+          (bizRow as unknown as { settings?: Record<string, unknown> } | null)?.settings?.smsWorkflows,
+        );
+        aiLoopMax = wfConfig.safeguards.aiLoopMaxReplies;
+        loopDecision = await evaluateThreadAiLoop(args.businessId, args.conversationId, aiLoopMax);
+      } catch (loopErr) {
+        console.log("[textback] ai-loop evaluation failed (reply unaffected): " + String(loopErr));
+      }
+      if (loopDecision?.suppress) {
+        console.log(
+          "[textback] AI loop detected on conversation " +
+            args.conversationId +
+            " (" +
+            loopDecision.echoCount +
+            " consecutive auto-echoed replies >= " +
+            aiLoopMax +
+            ") - auto-reply stopped, handing thread to a human",
+        );
+        await handLoopedThreadToHuman(args.businessId, args.conversationId, loopDecision.echoCount);
+      } else {
+        const replyGate = await tryPipelineReply(args, pipeline.reply.text, {
+          // EMERGENCY EXCEPTION (pricing.ts): emergency replies are never
+          // rate-limited — a flooded basement is not silenced by a counter.
+          emergency: pipeline.classification.urgency === "emergency",
+        });
+        if (replyGate) turnGate = replyGate;
+      }
     }
   }
   return { command, status, limitReached: turnGate };
@@ -415,13 +452,27 @@ async function escalateEmergency(
       type: "new_lead",
       payload,
     });
-    queueNotificationEmail({
+    // P4-S: owner email gated by the email channel toggle, owner SMS by the
+    // SMS toggle (emergency_escalation workflow, which by design overrides
+    // quiet hours and caps but never the opt-out rule).
+    const bizRow = await q.getBusiness(args.businessId).catch(() => null);
+    const bizSettings = (bizRow as unknown as { settings?: Record<string, unknown> } | null)?.settings ?? {};
+    queueOwnerNotificationEmail({
       businessId: args.businessId,
+      businessSettings: bizSettings,
       notificationId: notification.id,
       type: "new_lead",
       payload,
-      store: notificationEmailStore,
     });
+    void notifyOwnerViaSms(
+      args.businessId,
+      "emergency",
+      {
+        customerName: leadId ? undefined : "A customer",
+        serviceNeed: c.serviceNeed ?? "an emergency",
+      },
+      { emergency: true, leadId: leadId },
+    );
     console.log(
       "[textback] EMERGENCY escalated (key " +
         (c.emergencyKey ?? "unclassified") +
@@ -512,7 +563,3 @@ async function tryReplyCommand(
   }
 }
 
-/** Share one normalize implementation; fall back to the stored string. */
-function normalizeForSend(phone: string): string {
-  return normalizePhone(phone) ?? phone;
-}
