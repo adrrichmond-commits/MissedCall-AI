@@ -135,12 +135,14 @@ export const EMERGENCIES: readonly EmergencyKbEntry[] = [
     name: "Water heater leaking",
     severity: "severe",
     // Heater word + leak verb, both orders — adjacency window keeps "replace
-    // my water heater" (no leak language) from matching.
+    // my water heater" (no leak language) from matching. P5-3 tuning: the
+    // burst family joins the verb set — "hot water tank burst" is the same
+    // flooding path and was missed before.
     patterns: [
       /\bwater (heater|heatter|heate|heate?r?s?)\b.{0,30}\b(leak|leaking|leeking|leek|gush|pour|spray|spew|flood)/,
       /\b(leak|leaking|leeking|leek|gush|pour|spray|spew|flood)\b.{0,30}\bwater (heater|heatter|heaters?)\b/,
-      /\bheater (is |was )?(leaking|pouring|spraying|gushing)\b/,
-      /\btank (is )?(leaking|pouring|spraying|gushing)/,
+      /\bheater (is |was )?(leaking|pouring|spraying|gushing|burst|busted|ruptured|exploded)\b/,
+      /\b(hot water |water )?tank (is )?(leaking|pouring|spraying|gushing|burst|busted|ruptured|exploded)/,
     ],
     afterHoursEscalation: true,
     customerScript: [

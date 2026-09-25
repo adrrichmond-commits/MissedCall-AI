@@ -71,7 +71,9 @@ const EMERGENCY_GROUPS: RuleGroup[] = [
     key: "burst_pipe",
     label: "burst pipe",
     safety: true,
-    res: [/\b(burst|busted|ruptured|exploded|blew)/, /\b(pipe|pipes|piping|water (line|main))/],
+    // P5-3 tuning: "tank|tanks" added — "hot water tank burst" was missed
+    // before (a burst heater tank is the same flooding path as a burst pipe).
+    res: [/\b(burst|busted|ruptured|exploded|blew)/, /\b(pipe|pipes|piping|tank|tanks|water (line|main))/],
   },
   {
     key: "flooding",
@@ -109,9 +111,13 @@ const EMERGENCY_GROUPS: RuleGroup[] = [
   },
   {
     key: "overflowing_toilet",
-    label: "overflowing toilet",
+    label: "overflowing fixture",
     safety: true,
-    res: [/\btoilet\b/, /\boverflow(ing|ed|s)?\b/],
+    // P5-3 tuning: the fixture noun set widened past "toilet" — "my sink
+    // overflowed" / "the drain overflowed" were missed before. Same overflow
+    // verb as before; the conservative direction stays toward emergency
+    // (historical mentions match, exactly like the flood rule documents).
+    res: [/\b(toilet|toilets|sink|sinks|bathtub|tub|shower|dishwasher|drain|drains|laundry)\b/, /\boverflow(ing|ed|s)?\b/],
   },
   {
     key: "water_heater_heavy_leak",

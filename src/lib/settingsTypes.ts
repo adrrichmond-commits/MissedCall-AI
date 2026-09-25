@@ -2,6 +2,7 @@
  * Client-safe shared types + constants for onboarding & settings.
  * No server imports — both the server-fn layer and route components use this.
  */
+import type { AiTone } from "~/lib/aiTone";
 
 export const DAY_LABELS = [
   "Sunday",
@@ -172,6 +173,13 @@ export interface SettingsView {
   emergencyPrefs: EmergencyPrefs;
   /** True once the owner saved emergency prefs at least once (emergencyPrefsSavedAt). */
   emergencyPrefsSaved: boolean;
+  /**
+   * P5-3: the AI tone the owner picked (settings.aiTone, sanitized). The
+   * default "professional" is also what unset/garbage resolves to.
+   */
+  aiTone: AiTone;
+  /** True once the owner saved an AI tone at least once (aiToneSavedAt). */
+  aiToneSaved: boolean;
   /**
    * P4-O: the EXACT greeting a caller hears today — the studio-configured one
    * verbatim when set, the default (built from the receptionist name) when

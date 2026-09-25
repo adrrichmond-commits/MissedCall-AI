@@ -18,6 +18,7 @@ import {
   type ReceptionistConfig,
   type ReceptionistFaq,
 } from "~/lib/voice/receptionistConfig";
+import { AI_TONE_OPTIONS, type AiTone } from "~/lib/aiTone";
 import { PROMPTS } from "~/lib/voice/callFlow";
 import type { ReceptionistStudioView } from "~/lib/server/receptionistReads";
 
@@ -102,6 +103,7 @@ function newFaqId(): string {
 function ReceptionistStudioPage() {
   const view = Route.useLoaderData();
   const [draft, setDraft] = useState<ReceptionistConfig>(view.config);
+  const [tone, setTone] = useState<AiTone>(view.aiTone);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const canEdit = view.canEdit;
 
@@ -115,9 +117,10 @@ function ReceptionistStudioPage() {
       return;
     }
     setSave({ kind: "saving" });
-    const res = await saveReceptionistConfigFn({ data: draft });
+    const res = await saveReceptionistConfigFn({ data: { ...draft, aiTone: tone } });
     if (res.ok) {
       setDraft(res.data.config);
+      setTone(res.data.aiTone as AiTone);
       setSave({ kind: "saved", message: res.data.message });
     } else {
       setSave({ kind: "error", message: res.error });
@@ -143,6 +146,7 @@ function ReceptionistStudioPage() {
       </p>
       <div className="space-y-6">
         <IdentitySection draft={draft} businessName={view.businessName} patch={patch} canEdit={canEdit} />
+        <ToneSection tone={tone} setTone={setTone} canEdit={canEdit} aiToneSaved={view.aiToneSaved} />
         <PoliciesSection draft={draft} patch={patch} canEdit={canEdit} />
         <TransferSection draft={draft} patch={patch} canEdit={canEdit} businessPhone={view.businessPhone} />
         <FaqSection draft={draft} patch={patch} canEdit={canEdit} setDraft={setDraft} />
@@ -214,6 +218,64 @@ function IdentitySection({
           <p className="mt-1 text-sm text-slate-900">“{preview}”</p>
         </div>
       </div>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1b. AI tone (P5-3) — how the TEXTING assistant sounds; saved with the main
+// save button. The voice flow's spoken lines are scripted, so tone steers the
+// SMS AI (the settings page exposes the same control).
+// ---------------------------------------------------------------------------
+function ToneSection({
+  tone,
+  setTone,
+  canEdit,
+  aiToneSaved,
+}: {
+  tone: AiTone;
+  setTone: (t: AiTone) => void;
+  canEdit: boolean;
+  aiToneSaved: boolean;
+}) {
+  return (
+    <SectionCard
+      title="AI tone"
+      description="How your AI sounds when it texts customers about missed calls. Saves with the “Save receptionist” button below and applies to the very next AI reply."
+    >
+      <div className="grid gap-2 sm:grid-cols-2">
+        {AI_TONE_OPTIONS.map((option) => {
+          const selected = tone === option.value;
+          return (
+            <label
+              key={option.value}
+              className={
+                "flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition " +
+                (selected
+                  ? "border-brand-500 bg-brand-50 ring-1 ring-inset ring-brand-200"
+                  : "border-slate-200 bg-white hover:bg-slate-50")
+              }
+            >
+              <input
+                type="radio"
+                name="studio-ai-tone"
+                className="mt-0.5 h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-500"
+                checked={selected}
+                disabled={!canEdit}
+                onChange={() => setTone(option.value)}
+              />
+              <span>
+                <span className="block text-sm font-medium text-slate-900">{option.label}</span>
+                <span className="block text-xs text-slate-500">{option.description}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Tone changes phrasing only — the safety rules (emergency scripts, no prices, honest routing)
+        always win. {!aiToneSaved ? "You have not customized it yet — Professional is in effect." : ""}
+      </p>
     </SectionCard>
   );
 }

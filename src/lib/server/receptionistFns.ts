@@ -23,6 +23,7 @@ import { createServerFn } from "@tanstack/react-start";
 import type { MessageClassification } from "~/db/schema";
 import { requireActiveWrite, requireAuth } from "~/lib/server/auth.server";
 import { authErrorToResult } from "~/lib/server/sessionFns";
+import { AI_TONE_OPTIONS } from "~/lib/aiTone";
 import { receptionistStudioView, type ReceptionistStudioView } from "~/lib/server/receptionistReads";
 import {
   confirmPromptOverride,
@@ -67,7 +68,7 @@ export const getReceptionistConfigFn = createServerFn({ method: "GET" }).handler
 // ---------------------------------------------------------------------------
 export const saveReceptionistConfigFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as Record<string, unknown>)
-  .handler(async ({ data }): Promise<ReceptionistResult<{ message: string; config: ReceptionistConfig }>> => {
+  .handler(async ({ data }): Promise<ReceptionistResult<{ message: string; config: ReceptionistConfig; aiTone: string }>> => {
     try {
       const ctx = await requireActiveWrite("owner", "manager");
       const businessId = ctx.business.id;
@@ -79,15 +80,25 @@ export const saveReceptionistConfigFn = createServerFn({ method: "POST" })
           error: validated.issues.map((i) => i.message).join(" "),
         };
       }
+      // P5-3: the studio's tone selector rides on the same save (stored FLAT
+      // on settings, not inside the receptionist config object). The pipeline
+      // reads it on the next AI turn; unknown values are rejected, never stored.
+      const toneRaw = typeof data.aiTone === "string" ? data.aiTone.trim().toLowerCase() : "";
+      const toneOption = AI_TONE_OPTIONS.find((o) => o.value === toneRaw);
+      if (!toneOption) {
+        return { ok: false, status: 400, error: "Choose one of the listed AI tones." };
+      }
       const current = await q.getBusiness(businessId);
       if (!current) return { ok: false, status: 404, error: "Business not found." };
       const settings = {
         ...((current as unknown as { settings?: Record<string, unknown> }).settings ?? {}),
         receptionist: validated.value,
         receptionistSavedAt: new Date().toISOString(),
+        aiTone: toneOption.value,
+        aiToneSavedAt: new Date().toISOString(),
       };
       await q.updateBusinessSettings(businessId, settings);
-      return { ok: true, data: { message: "Receptionist saved.", config: validated.value } };
+      return { ok: true, data: { message: "Receptionist saved.", config: validated.value, aiTone: toneOption.value } };
     } catch (e) {
       return authErrorToResult(e);
     }
