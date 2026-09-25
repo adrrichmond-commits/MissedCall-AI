@@ -11,6 +11,7 @@ import {
   StatusBadge,
 } from "~/components/app/pageStates";
 import { formatDateTime, formatMoney, formatRelative } from "~/lib/format";
+import { trialValueView, type TrialValueView } from "~/lib/trialValue";
 
 export const Route = createFileRoute("/_app/dashboard")({
   // ?welcome=done — set by the onboarding finish step; renders the one-time
@@ -68,20 +69,44 @@ function WelcomePanel() {
 function DashboardPage() {
   const data = Route.useLoaderData();
   const { welcome } = Route.useSearch();
+  // P4-V: the trial value indicator — the product paying for itself, visible
+  // before the trial runs out. Real counts only (recovery-funnel "recovered").
+  const trialView = data.trial
+    ? trialValueView({
+        isTrial: data.trial.active,
+        recoveredCount: data.recoveredLeads,
+        daysRemaining: data.trial.daysRemaining,
+      })
+    : null;
 
   return (
     <div>
       <PageHeader
         title="Dashboard"
         description="A live view of your missed-call leads, conversations, and booked work."
+        actions={
+          data.isDemo ? (
+            <span
+              data-testid="demo-tag"
+              className="inline-flex items-center rounded-full bg-violet-600 px-2.5 py-0.5 text-xs font-bold uppercase tracking-wide text-white"
+              title="This dashboard shows the seeded demo data, not real customers."
+            >
+              Demo data
+            </span>
+          ) : undefined
+        }
       />
 
       {welcome ? <WelcomePanel /> : null}
 
-      {/* P3-D: Revenue Recovered — the primary KPI card */}
-      <RevenueCard revenue={data.revenue} />
+      {trialView?.show ? <TrialValueBanner view={trialView} /> : null}
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {/*
+        P4-V owner priority order — what a plumber must act on, top to bottom:
+        new leads → emergencies → recovered (missed-call saves) →
+        appointment requests → revenue → follow-ups → recent activity.
+      */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="New leads (7 days)"
           value={data.metrics.newLeadsThisWeek}
@@ -90,34 +115,83 @@ function DashboardPage() {
           href="/leads"
         />
         <MetricCard
-          label="Open conversations"
-          value={data.metrics.openConversations}
-          tone="aqua"
-          hint="Active + awaiting customer"
-          href="/inbox"
-        />
-        <MetricCard
-          label="Upcoming appointments"
-          value={data.metrics.upcomingAppointments}
-          tone="green"
-          hint={
-            data.metrics.upcomingAppointments > 0
-              ? data.metrics.confirmedAppointments + " confirmed - " + data.metrics.requestedAppointments + " requested"
-              : "Requested and confirmed from now on"
-          }
-          href="/appointments"
-        />
-        <MetricCard
           label="Emergency leads"
           value={data.metrics.emergencyLeads}
-          tone="amber"
+          tone={data.metrics.emergencyLeads > 0 ? "red" : "amber"}
           hint={data.metrics.emergencyLeads > 0 ? "Open leads needing a callback today" : "No open emergencies"}
           href="/leads?priority=emergency"
         />
+        <MetricCard
+          label="Recovered (missed-call saves)"
+          value={data.recoveredLeads}
+          tone="aqua"
+          hint="Missed callers the AI texted back and engaged"
+          href="/leads?source=missed_call"
+        />
+        <MetricCard
+          label="Appointment requests"
+          value={data.metrics.requestedAppointments}
+          tone="green"
+          hint={
+            data.metrics.requestedAppointments > 0
+              ? data.metrics.confirmedAppointments + " confirmed upcoming - review and confirm"
+              : "Requested by recovered leads, confirmed by you"
+          }
+          href="/appointments"
+        />
+      </div>
+
+      {/* Priority 5: revenue — the "is this paying for itself" card */}
+      <div className="mt-4">
+        <RevenueCard revenue={data.revenue} />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        {/* Recent lead activity */}
+        {/* Priority 6: follow-up queue (P3-C): open callbacks, oldest-due first */}
+        <section aria-labelledby="follow-ups" className="rounded-xl border border-slate-200 bg-white">
+          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
+            <h2 id="follow-ups" className="text-sm font-semibold text-slate-900">
+              Follow-ups
+              {data.followUps.openCount > 0 ? (
+                <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-600/20">
+                  {data.followUps.openCount} open
+                </span>
+              ) : null}
+            </h2>
+            <span className="text-xs text-slate-400">Call back, then mark done</span>
+          </div>
+          {data.followUps.tasks.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                title="No follow-ups"
+                description="Every captured lead gets a callback reminder here automatically."
+              />
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {data.followUps.tasks.map((t) => (
+                <li key={t.id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
+                  <MarkDoneButton taskId={t.id} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a href={`/leads/${t.leadId}`} className="truncate text-sm font-semibold text-brand-700 hover:text-brand-800">
+                        {t.leadName}
+                      </a>
+                      <span className="text-xs text-slate-400">Due {formatDateTime(t.dueAt)}</span>
+                    </div>
+                    <p className="mt-0.5 truncate text-sm text-slate-600">
+                      {t.serviceNeed}
+                      {t.leadPhone ? ` · ${t.leadPhone}` : ""}
+                    </p>
+                    {t.note ? <p className="mt-0.5 truncate text-xs text-slate-500">{t.note}</p> : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* Priority 7: recent activity — leads first, then booked work */}
         <section aria-labelledby="recent-leads" className="rounded-xl border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
             <h2 id="recent-leads" className="flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -167,51 +241,8 @@ function DashboardPage() {
           )}
         </section>
 
-        {/* Follow-up queue (P3-C): open callbacks, oldest-due first */}
-        <section aria-labelledby="follow-ups" className="rounded-xl border border-slate-200 bg-white lg:col-span-2">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
-            <h2 id="follow-ups" className="text-sm font-semibold text-slate-900">
-              Follow-ups
-              {data.followUps.openCount > 0 ? (
-                <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-600/20">
-                  {data.followUps.openCount} open
-                </span>
-              ) : null}
-            </h2>
-            <span className="text-xs text-slate-400">Call back, then mark done</span>
-          </div>
-          {data.followUps.tasks.length === 0 ? (
-            <div className="p-4">
-              <EmptyState
-                title="No follow-ups"
-                description="Every captured lead gets a callback reminder here automatically."
-              />
-            </div>
-          ) : (
-            <ul className="divide-y divide-slate-100">
-              {data.followUps.tasks.map((t) => (
-                <li key={t.id} className="flex items-center gap-3 px-4 py-3 sm:px-5">
-                  <MarkDoneButton taskId={t.id} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <a href={`/leads/${t.leadId}`} className="truncate text-sm font-semibold text-brand-700 hover:text-brand-800">
-                        {t.leadName}
-                      </a>
-                      <span className="text-xs text-slate-400">Due {formatDateTime(t.dueAt)}</span>
-                    </div>
-                    <p className="mt-0.5 truncate text-sm text-slate-600">
-                      {t.serviceNeed}
-                      {t.leadPhone ? ` · ${t.leadPhone}` : ""}
-                    </p>
-                    {t.note ? <p className="mt-0.5 truncate text-xs text-slate-500">{t.note}</p> : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
         {/* Next appointments */}
-        <section aria-labelledby="next-appts" className="rounded-xl border border-slate-200 bg-white">
+        <section aria-labelledby="next-appts" className="rounded-xl border border-slate-200 bg-white lg:col-span-2">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
             <h2 id="next-appts" className="text-sm font-semibold text-slate-900">
               Next appointments
@@ -247,6 +278,38 @@ function DashboardPage() {
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+/**
+ * P4-V: the trial value line. Prominent but honest — when the AI hasn't
+ * recovered anyone yet it says exactly that and points at the fix
+ * (connect your number), never a padded number.
+ */
+function TrialValueBanner({ view }: { view: TrialValueView }) {
+  return (
+    <div
+      data-testid="trial-value-banner"
+      role="status"
+      aria-label="Trial value"
+      className={`mt-4 rounded-2xl border p-5 ${
+        view.zeroState ? "border-slate-200 bg-slate-50" : "border-green-200 bg-green-50"
+      }`}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className={`text-lg font-bold ${view.zeroState ? "text-slate-700" : "text-green-900"}`}>
+          {view.headline}
+        </p>
+        {!view.zeroState ? (
+          <a href="/leads" className="text-xs font-semibold text-green-700 hover:text-green-800">
+            See recovered leads
+          </a>
+        ) : null}
+      </div>
+      <p className={`mt-1 text-sm ${view.zeroState ? "text-slate-500" : "text-green-800"}`}>
+        {view.subline}
+      </p>
     </div>
   );
 }

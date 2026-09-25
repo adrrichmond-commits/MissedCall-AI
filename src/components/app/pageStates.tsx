@@ -37,7 +37,7 @@ export function MetricCard({
   label: string;
   value: string | number;
   hint?: string;
-  tone?: "brand" | "aqua" | "green" | "amber";
+  tone?: "brand" | "aqua" | "green" | "amber" | "red";
   href?: string;
 }) {
   const toneCls =
@@ -47,7 +47,9 @@ export function MetricCard({
         ? "text-aqua-700 bg-aqua-50"
         : tone === "green"
           ? "text-emerald-700 bg-emerald-50"
-          : "text-amber-700 bg-amber-50";
+          : tone === "red"
+            ? "text-red-700 bg-red-50"
+            : "text-amber-700 bg-amber-50";
   const body = (
     <div className="rounded-xl border border-slate-200 bg-white p-5 transition-shadow hover:shadow-sm">
       <div className="flex items-center justify-between gap-2">

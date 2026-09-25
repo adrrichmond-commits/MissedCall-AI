@@ -22,6 +22,7 @@ import {
   toLifecycleStatus,
 } from "~/lib/server/leadLifecycle";
 import { maybeCreateFollowUpTaskForTransition } from "~/lib/server/followUps";
+import { trialDaysRemaining } from "~/lib/trialValue";
 import {
   computePeriodBounds,
   funnelStages,
@@ -86,6 +87,17 @@ export interface DashboardData {
     /** Open (not won/lost) leads marked priority='emergency'. */
     emergencyLeads: number;
   };
+  /**
+   * P4-V: trial-value indicator inputs. null when not on an active trial.
+   * recoveredLeads (top level, always present) uses the recovery-funnel
+   * definition: missed-call leads with at least one SMS conversation —
+   * the AI actually engaged the caller. Drives both the "Recovered" KPI
+   * card and the trial indicator line.
+   */
+  recoveredLeads: number;
+  trial: { active: boolean; daysRemaining: number } | null;
+  /** True only for the seeded demo business (P4-V "DEMO" labeling). */
+  isDemo: boolean;
   /**
    * P3-D Revenue Recovered — the primary KPI card. Won leads' summed
    * pipeline_value_cents for this week / this month / all time, plus the
@@ -153,7 +165,7 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
           })),
         };
       })();
-      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments, revenue] =
+      const [newLeadsThisWeek, convoCounts, upcoming, upcomingConfirmed, upcomingRequested, leadStatusCounts, priorityCounts, recentLeads, recentAppointments, revenue, recoveryStats] =
         await Promise.all([
           q.countLeadsCreatedSince(businessId, weekAgo),
           q.countConversationsByStatus(businessId),
@@ -165,11 +177,28 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
           q.listLeads(businessId, {}, { limit: 6, order: "desc" }),
           q.listAppointments(businessId, {}, { limit: 5, order: "asc" }),
           q.revenueMetrics(businessId, ctx.business.timezone),
+          q.missedCallRecoveryStats(businessId),
         ]);
       const withConv = await q.leadIdsWithConversations(businessId, recentLeads.map((l) => l.id));
+      // P4-V: trial state for the value indicator. Same expiry math as
+      // getTrialStatusFn (sessionFns) so both surfaces agree.
+      const trialEndsAt = ctx.business.trialEndsAt;
+      const trialExpired = trialEndsAt != null && trialEndsAt.getTime() <= Date.now();
+      const onActiveTrial = ctx.business.plan === "trial" && !trialExpired;
       return {
         ok: true,
         data: {
+          trial: onActiveTrial
+            ? {
+                active: true,
+                daysRemaining: trialDaysRemaining(
+                  trialEndsAt != null ? trialEndsAt.getTime() : null,
+                  Date.now(),
+                ),
+              }
+            : null,
+          recoveredLeads: recoveryStats.recovered,
+          isDemo: ctx.business.isDemo === true,
           metrics: {
             newLeadsThisWeek,
             openConversations: convoCounts.active + convoCounts.awaiting_customer,
