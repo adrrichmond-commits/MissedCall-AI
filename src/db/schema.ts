@@ -140,6 +140,29 @@ export interface Business {
    * login refuses. Only the admin dashboard writes it.
    */
   disabledAt: Date | null;
+  /**
+   * P5-7 (migration 022): this business's stable referral code, assigned
+   * lazily on first read (and at signup for new businesses). NULL until then.
+   * The shareable link is /signup?ref=<code> — attribution lands in referrals.
+   */
+  referralCode: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+/**
+ * P5-7 (migration 022): referral attribution. One row per referred business —
+ * `business_id` is the NEW signup, `referrerBusinessId` the business whose
+ * code/link it came through. Records only the fact of the referral; no
+ * incentive/reward data exists until the owner decides real terms.
+ */
+export interface Referral {
+  id: string;
+  /** The referred (new) business. */
+  businessId: string;
+  /** The referring business. */
+  referrerBusinessId: string;
+  /** The code as presented at signup. */
+  referralCode: string;
   createdAt: Date;
   updatedAt: Date;
 }

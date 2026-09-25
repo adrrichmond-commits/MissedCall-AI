@@ -155,7 +155,7 @@ jobs:
 
       - name: DB-backed feature suites (DATABASE_URL from the service container)
         run: |
-          suites="e2e-journey p52-roi p53-settings p54-takeover p55-reporting p56-admin"
+          suites="e2e-journey p52-roi p53-settings p54-takeover p55-reporting p56-admin p57-acquisition"
           for t in $suites; do
             echo "::group::bun scripts/test-$t.ts"
             if bun "scripts/test-$t.ts"; then

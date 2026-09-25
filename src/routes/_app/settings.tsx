@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   addServiceAreaFn,
   addServiceFn,
@@ -23,6 +23,8 @@ import {
   AI_TONE_OPTIONS,
   type AiTone,
 } from "~/lib/aiTone";
+import { referralLink } from "~/lib/referralCode";
+import { getMyReferralFn } from "~/lib/server/referralFns";
 import {
   COMMON_TIMEZONES,
   DAY_LABELS,
@@ -136,6 +138,7 @@ function SettingsPage() {
         <NotificationsSection view={view} refresh={refresh} canEdit={canEdit} />
         <EmergencySection view={view} refresh={refresh} canEdit={canEdit} />
         <LinkedSurfacesSection />
+        <ReferralSection />
         {view.role === "owner" ? <SubscriptionSection /> : null}
       </div>
     </div>
@@ -874,6 +877,87 @@ function AiAssistantSection({
           ) : null}
         </div>
       </form>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4d. Referral (P5-7 foundation) — a stable per-business code + shareable
+// link. FACT ONLY: signups through the link are attributed to this business.
+// NO incentives/rewards are promised anywhere — the owner has not decided
+// real terms, and the UI must not invent any.
+// ---------------------------------------------------------------------------
+function ReferralSection() {
+  const [ref, setRef] = useState<{ code: string; referredCount: number } | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    getMyReferralFn()
+      .then((res) => {
+        if (!alive) return;
+        if (res.ok) setRef({ code: res.code, referredCount: res.referredCount });
+        else setLoadError(true);
+      })
+      .catch(() => {
+        if (alive) setLoadError(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Effects only run in the browser, so window is safe here.
+  const link = ref ? referralLink(ref.code, window.location.origin) : "";
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <SectionCard
+      title="Refer a fellow plumber"
+      description="Share your link with another plumbing business. If they sign up through it, the signup is recorded as coming from you — that's all it does today."
+    >
+      {loadError ? (
+        <p className="text-sm text-slate-500">
+          Your referral link couldn&apos;t load. Retry by reloading this page.
+        </p>
+      ) : !ref ? (
+        <p className="text-sm text-slate-500">Loading your referral link…</p>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              readOnly
+              value={link}
+              aria-label="Your referral link"
+              onFocus={(e) => e.currentTarget.select()}
+              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-700"
+            />
+            <Button type="button" variant="secondary" onClick={copyLink}>
+              {copied ? "Copied!" : "Copy link"}
+            </Button>
+          </div>
+          <p className="text-xs text-slate-500">
+            Your code: <span className="font-mono font-semibold text-slate-700">{ref.code}</span>
+            {ref.referredCount > 0 ? (
+              <>
+                {" · "}
+                {ref.referredCount} {ref.referredCount === 1 ? "business has" : "businesses have"} signed
+                up through your link
+              </>
+            ) : null}
+          </p>
+        </div>
+      )}
     </SectionCard>
   );
 }

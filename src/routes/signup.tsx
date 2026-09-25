@@ -7,6 +7,15 @@ import { Field, TextInput } from "~/components/ui/Form";
 import { Button } from "~/components/ui/Button";
 
 export const Route = createFileRoute("/signup")({
+  validateSearch: (search: Record<string, unknown>) => {
+    const out: { ref?: string } = {};
+    // P5-7 referral link: /signup?ref=CODE — passed through to signupFn and
+    // attributed after the account exists. Anything malformed is dropped.
+    if (typeof search.ref === "string" && search.ref.trim().length > 0) {
+      out.ref = search.ref.trim().slice(0, 32);
+    }
+    return out;
+  },
   beforeLoad: async () => {
     const session = await getSessionFn();
     if (session) throw redirect({ to: "/dashboard" });
@@ -15,6 +24,7 @@ export const Route = createFileRoute("/signup")({
 });
 
 function Signup() {
+  const { ref } = Route.useSearch();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -29,6 +39,7 @@ function Signup() {
         fullName: String(form.get("fullName") ?? ""),
         email: String(form.get("email") ?? ""),
         password: String(form.get("password") ?? ""),
+        ...(ref ? { referralCode: ref } : {}),
       },
     });
     if (res.ok) {
@@ -83,6 +94,12 @@ function Signup() {
         <Button type="submit" className="w-full" size="lg" disabled={pending}>
           {pending ? "Creating your account…" : "Create account"}
         </Button>
+        {ref ? (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 ring-1 ring-inset ring-slate-200">
+            You&apos;re signing up through a referral link. It will be recorded as
+            coming from the business that shared it — nothing else changes.
+          </p>
+        ) : null}
         <p className="text-xs leading-relaxed text-slate-500">
           By creating an account you agree to our{" "}
           <a href="/terms" className="underline hover:text-slate-700">
