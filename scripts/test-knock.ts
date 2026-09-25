@@ -61,7 +61,10 @@ const realFetch = globalThis.fetch;
 type RecordedRequest = { url: string; method: string; headers: Record<string, string>; body: string };
 let requests: RecordedRequest[] = [];
 
-function installFetch(opts: { status: number; body: unknown } | null, failNetwork = false): void {
+function installFetch(
+  opts: { status: number; body: unknown; identifyStatus?: number; identifyBody?: unknown } | null,
+  failNetwork = false,
+): void {
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries((init?.headers as Record<string, string>) ?? {})) headers[k] = v;
@@ -72,6 +75,17 @@ function installFetch(opts: { status: number; body: unknown } | null, failNetwor
       body: typeof init?.body === "string" ? init.body : "",
     });
     if (failNetwork) throw new Error("ECONNREFUSED 127.0.0.1");
+    // The identify upsert (PUT /v1/users/{id}) is stubbed to succeed by
+    // default so the configured status/body exercises the TRIGGER — that is
+    // what every error-path test below intends. identifyStatus/identifyBody
+    // override it to test identify rejections.
+    if ((init?.method ?? "GET") === "PUT" && String(input).includes("/v1/users/")) {
+      if (opts === null) throw new Error("no fetch expected");
+      return new Response(JSON.stringify(opts?.identifyBody ?? {}), {
+        status: opts?.identifyStatus ?? 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (opts === null) throw new Error("no fetch expected");
     return new Response(JSON.stringify(opts.body), {
       status: opts.status,
@@ -133,14 +147,20 @@ delete process.env.KNOCK_API_BASE;
 }
 
 // --- triggerKnockEmail contract (stubbed Knock API) -----------------------------
+// Every trigger now makes TWO requests: the identify upsert (PUT
+// /v1/users/{email}, giving Knock the email property it delivers to) and the
+// workflow trigger (POST, recipients as string ids).
 installFetch({ status: 200, body: { workflow_run_id: "run_123", workflow: "missedcall-notify" } });
 const trig = await triggerKnockEmail({ to: "owner@rapidrooter.example", subject: "New lead", body: "plain body" });
 check("trigger: returns the workflow run id", { id: trig.id, workflowKey: trig.workflowKey }, { id: "run_123", workflowKey: "missedcall-notify" });
-check("trigger: exactly one request", requests.length, 1);
-check("trigger: POST to /v1/workflows/{key}/trigger", { method: requests[0]?.method, url: requests[0]?.url }, { method: "POST", url: "https://api.knock.app/v1/workflows/missedcall-notify/trigger" });
-check("trigger: Bearer auth from KNOCK_API_KEY", requests[0]?.headers["Authorization"], "Bearer sk_test_unit_key");
-const trigBody = JSON.parse(requests[0]?.body ?? "{}") as { recipients: { email: string }[]; data: Record<string, unknown> };
-check("trigger: inline email recipient", trigBody.recipients, [{ email: "owner@rapidrooter.example" }]);
+check("trigger: exactly two requests (identify then trigger)", requests.length, 2);
+check("identify: PUT /v1/users/{url-encoded email}", { method: requests[0]?.method, url: requests[0]?.url }, { method: "PUT", url: "https://api.knock.app/v1/users/owner%40rapidrooter.example" });
+check("identify: body sets the email property", JSON.parse(requests[0]?.body ?? "{}"), { email: "owner@rapidrooter.example" });
+check("identify: Bearer auth from KNOCK_API_KEY", requests[0]?.headers["Authorization"], "Bearer sk_test_unit_key");
+check("trigger: POST to /v1/workflows/{key}/trigger", { method: requests[1]?.method, url: requests[1]?.url }, { method: "POST", url: "https://api.knock.app/v1/workflows/missedcall-notify/trigger" });
+check("trigger: Bearer auth from KNOCK_API_KEY", requests[1]?.headers["Authorization"], "Bearer sk_test_unit_key");
+const trigBody = JSON.parse(requests[1]?.body ?? "{}") as { recipients: string[]; data: Record<string, unknown> };
+check("trigger: recipient is a string id (NOT an object — Knock 422s those)", trigBody.recipients, ["owner@rapidrooter.example"]);
 check("trigger: data carries subject + body", { subject: trigBody.data.subject, body: trigBody.data.body }, { subject: "New lead", body: "plain body" });
 check("trigger: data omits html when not provided", "html" in trigBody.data, false);
 
@@ -148,7 +168,22 @@ requests = [];
 installFetch({ status: 200, body: { id: "run_456" } });
 const trig2 = await triggerKnockEmail({ to: "a@b.example", subject: "s", body: "b", html: "<p>x</p>" });
 check("trigger: falls back to id field when workflow_run_id absent", trig2.id, "run_456");
-check("trigger: html forwarded when provided", ("html" in ((JSON.parse(requests[0]?.body ?? "{}") as { data: Record<string, unknown> }).data)), true);
+check("trigger: html forwarded when provided", ("html" in ((JSON.parse(requests[1]?.body ?? "{}") as { data: Record<string, unknown> }).data)), true);
+
+// Identify rejection must fail loudly: without the email property Knock
+// accepts the trigger but delivers nowhere, so we never fire it.
+requests = [];
+installFetch({ status: 200, body: { workflow_run_id: "run_never" }, identifyStatus: 400, identifyBody: { code: "bad_request", message: "malformed user" } });
+let identifyErr: Error | null = null;
+try {
+  await triggerKnockEmail({ to: "owner@rapidrooter.example", subject: "s", body: "b" });
+} catch (e) {
+  identifyErr = e as Error;
+}
+check("identify 400: throws KnockSendError", identifyErr instanceof KnockSendError, true);
+check("identify 400: carries Knock's own code", (identifyErr as KnockSendError | null)?.providerCode, "bad_request");
+check("identify 400: http status preserved", (identifyErr as KnockSendError | null)?.httpStatus, 400);
+check("identify 400: the trigger is never sent", requests.length, 1);
 
 // Knock rejection: the exact shape a missing workflow returns.
 requests = [];
@@ -213,8 +248,9 @@ requests = [];
 installFetch({ status: 200, body: { workflow_run_id: "run_knock" } });
 const viaKnock = await sendEmail({ to: "owner@rapidrooter.example", subject: "New lead", text: "plain body", html: "<p>html</p>" });
 check("precedence: knock+email set → knock wins", { transport: activeEmailTransport(), id: viaKnock.id, status: viaKnock.status }, { transport: "knock", id: "run_knock", status: "triggered" });
-check("precedence: request went to the Knock trigger URL", requests.length, 1);
-check("precedence: no Resend-style request made", requests[0]?.url.includes("api.knock.app"), true);
+check("precedence: identify + trigger went to Knock", requests.length, 2);
+check("precedence: no Resend-style request made", requests.every((r) => r.url.includes("api.knock.app")), true);
+check("precedence: second request is the trigger", { method: requests[1]?.method, url: requests[1]?.url }, { method: "POST", url: "https://api.knock.app/v1/workflows/missedcall-notify/trigger" });
 check("precedence: from reflects the knock workflow", viaKnock.from, "knock:missedcall-notify");
 
 // 2. Fallback: only EMAIL_* set → Resend-style path intact, byte-for-byte URL.
@@ -262,7 +298,7 @@ try {
 } catch (e) {
   rateErr = e as Error;
 }
-check("rate gate applies on the knock path", { calls: requests.length, inst: rateErr instanceof Error && (rateErr as Error).name }, { calls: 1, inst: "EmailSendError" });
+check("rate gate applies on the knock path", { calls: requests.length, inst: rateErr instanceof Error && (rateErr as Error).name }, { calls: 2, inst: "EmailSendError" });
 uninstallFetch();
 clearEnv();
 
@@ -326,7 +362,7 @@ installFetch({ status: 404, body: { code: "workflow_not_found", message: "Workfl
   check("hook: unpublished workflow → failed (loud-honest), not sent", r.outcome, "failed");
   check("hook: failure detail carries Knock's code", (r.detail ?? "").includes("workflow_not_found"), true);
   check("hook: failure never stamps email_sent_at", state.stampCalls, 0);
-  check("hook: failure makes the knock request anyway", requests.length, 1);
+  check("hook: failure makes the knock requests anyway (identify + trigger)", requests.length, 2);
 }
 uninstallFetch();
 
@@ -338,8 +374,9 @@ installFetch({ status: 200, body: { workflow_run_id: "run_hook_1" } });
   const r = await deliverNotificationEmail({ ...ARGS, store });
   check("hook: knock success outcome sent with run id", { outcome: r.outcome, emailId: r.emailId }, { outcome: "sent", emailId: "run_hook_1" });
   check("hook: success stamps email_sent_at (once)", state.stampCalls, 1);
-  const body = JSON.parse(requests[0]?.body ?? "{}") as { recipients: { email: string }[]; data: { subject: string; body: string } };
-  check("hook: knock recipient is the owner email", body.recipients, [{ email: "owner@rapidrooter.example" }]);
+  const body = JSON.parse(requests[1]?.body ?? "{}") as { recipients: string[]; data: { subject: string; body: string } };
+  check("hook: knock recipient is the owner email as a string id", body.recipients, ["owner@rapidrooter.example"]);
+  check("hook: identify upserts the owner user first", { method: requests[0]?.method, url: requests[0]?.url }, { method: "PUT", url: "https://api.knock.app/v1/users/owner%40rapidrooter.example" });
   check("hook: subject names the business", (body.data.subject ?? "").includes("Rapid Rooter Plumbing"), true);
   check("hook: body includes lead details", (body.data.body ?? "").includes("Dana Reyes") && (body.data.body ?? "").includes("Burst pipe"), true);
 }

@@ -15,11 +15,17 @@
  *   KNOCK_WORKFLOW_KEY  optional workflow key; default "missedcall-notify"
  *   KNOCK_API_BASE      optional; default https://api.knock.app
  *
- * The trigger payload carries an inline recipient (so per-business owner
- * emails work without pre-creating Knock users) and the rendered content in
- * `data` ({subject, body, html?}). The dashboard workflow's email template
- * references those as Knock liquid variables ({{ notification.data.subject }}
- * etc. — see docs/operations/environments.md for the owner's setup steps).
+ * The trigger payload carries the recipient as a STRING ID (the email
+ * address) — Knock's API rejects object recipients without an id with 422
+ * "recipients.id can't be blank" (live-proven). Because Knock emails the
+ * USER's `email` property (never anything inline in the trigger payload),
+ * triggerKnockEmail first upserts the user via PUT /v1/users/{id} with
+ * {"email": id} (id URL-encoded) whenever the recipient is an email —
+ * without that Knock accepts the trigger but has nowhere to deliver it.
+ * The rendered content still travels in `data` ({subject, body, html?}).
+ * The dashboard workflow's email template references those as Knock liquid
+ * variables ({{ notification.data.subject }} etc. — see
+ * docs/operations/environments.md for the owner's setup steps).
  *
  * KNOCK_SIGNING_KEY: present in the environment but deliberately NOT consumed
  * yet. It signs Knock's webhook callbacks (delivery/bounce events). When
@@ -79,7 +85,7 @@ export class KnockSendError extends Error {
 }
 
 export interface KnockTriggerArgs {
-  /** Recipient email address (sent as an inline Knock recipient). */
+  /** Recipient email address (sent as the Knock user id; identified first). */
   to: string;
   subject: string;
   /** Plain-text body. Always sent; the workflow template's primary content. */
@@ -104,17 +110,65 @@ interface KnockTriggerResponse {
 }
 
 /**
+ * Recipient ids we send are email addresses. Knock delivers to the user's
+ * `email` property, so an email-shaped recipient gets an identify upsert.
+ */
+const EMAIL_RECIPIENT_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Upsert the Knock user whose id IS the email address, setting the `email`
+ * property Knock's email channel delivers to (PUT /v1/users/{id}, id
+ * URL-encoded). Throws KnockSendError on rejection — a failed identify means
+ * the subsequent trigger would be accepted but deliverable nowhere, so it
+ * must fail loudly, never pretend the email went out.
+ */
+async function knockIdentifyUserByEmail(config: KnockConfig, email: string): Promise<void> {
+  const url = config.apiBase + "/v1/users/" + encodeURIComponent(email);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer " + config.apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email }),
+    });
+  } catch (cause) {
+    throw new KnockSendError("Network error contacting Knock (identify): " + String(cause), null, 0);
+  }
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as KnockTriggerResponse;
+    const code = payload.code ?? payload.name ?? null;
+    throw new KnockSendError(
+      "Knock rejected the identify" +
+        (code ? " (" + code + ")" : "") +
+        ": " +
+        (payload.message ?? payload.name ?? response.statusText),
+      code,
+      response.status,
+    );
+  }
+}
+
+/**
  * Trigger the notification workflow for one email via POST
- * {KNOCK_API_BASE}/v1/workflows/{workflowKey}/trigger. Throws
- * KnockNotConfiguredError when credentials are absent; KnockSendError when
- * Knock rejects the trigger (4xx/5xx, malformed response, network error).
+ * {KNOCK_API_BASE}/v1/workflows/{workflowKey}/trigger. The recipient is sent
+ * as a string id; email-shaped recipients are identified (user upsert with
+ * the email property) first. Throws KnockNotConfiguredError when credentials
+ * are absent; KnockSendError when Knock rejects the identify or the trigger
+ * (4xx/5xx, malformed response, network error).
  */
 export async function triggerKnockEmail(args: KnockTriggerArgs): Promise<KnockTriggerResult> {
   const config = readKnockConfig();
   if (!config) throw new KnockNotConfiguredError();
+  // Knock emails the user's `email` property — upsert it before triggering.
+  if (EMAIL_RECIPIENT_RE.test(args.to)) {
+    await knockIdentifyUserByEmail(config, args.to);
+  }
   const url = config.apiBase + "/v1/workflows/" + encodeURIComponent(config.workflowKey) + "/trigger";
   const body: Record<string, unknown> = {
-    recipients: [{ email: args.to }],
+    recipients: [args.to],
     data: {
       subject: args.subject,
       body: args.body,
