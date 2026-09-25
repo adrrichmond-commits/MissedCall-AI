@@ -4,7 +4,7 @@
  * ISOLATION RULE: every function takes `businessId` and filters on it. Message
  * reads join through conversations so a foreign conversation id cannot leak rows.
  */
-import type { Conversation, ConversationStatus, Message, MessageDirection, MessageStatus } from "../schema";
+import type { Conversation, ConversationHandoffStatus, ConversationStatus, Message, MessageDirection, MessageStatus } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
 export interface ConversationFilters {
@@ -348,6 +348,73 @@ export async function deleteConversation(businessId: string, conversationId: str
   const db = sql();
   const rows = await db`DELETE FROM conversations WHERE id = ${conversationId} AND business_id = ${businessId} RETURNING id`;
   return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// P5-4: human takeover / escalation (migration 020)
+// ---------------------------------------------------------------------------
+
+/**
+ * Flag a conversation as needing a human. The WHERE clause requires
+ * handoff_status = 'ai', so the flag is IDEMPOTENT per thread: only the first
+ * trigger after a takeover/release moves the state, and the caller learns
+ * from the null return whether it should notify (no duplicate notification
+ * storms on every turn). Business-scoped.
+ */
+export async function markConversationNeedsHuman(
+  businessId: string,
+  conversationId: string,
+  reason: string,
+  detail: Record<string, unknown> | null,
+): Promise<Conversation | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `UPDATE conversations
+     SET handoff_status = 'needed', handoff_reason = $3, handoff_detail = $4::jsonb, handoff_at = now()
+     WHERE id = $1 AND business_id = $2 AND handoff_status = 'ai'
+     RETURNING *`,
+    [conversationId, businessId, reason, detail ? JSON.stringify(detail) : null],
+  );
+  return (rows[0] as unknown as Conversation | undefined) ?? null;
+}
+
+/**
+ * Take over ('human', stamping who/when) or hand back to the AI ('ai',
+ * clearing the flag). Taking over KEEPS handoff_reason/detail so the thread
+ * still shows why it was flagged; handing back clears them. Business-scoped;
+ * null when the conversation does not belong to this business.
+ */
+export async function setConversationHandoff(
+  businessId: string,
+  conversationId: string,
+  status: Extract<ConversationHandoffStatus, "ai" | "human">,
+  takenOverBy: string | null,
+): Promise<Conversation | null> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `UPDATE conversations
+     SET handoff_status = $3,
+         handoff_by = CASE WHEN $3 = 'human' THEN $4 ELSE NULL END,
+         handoff_at = CASE WHEN $3 = 'human' THEN now() ELSE NULL END,
+         handoff_reason = CASE WHEN $3 = 'human' THEN handoff_reason ELSE NULL END,
+         handoff_detail = CASE WHEN $3 = 'human' THEN handoff_detail ELSE NULL END
+     WHERE id = $1 AND business_id = $2
+     RETURNING *`,
+    [conversationId, businessId, status, takenOverBy],
+  );
+  return (rows[0] as unknown as Conversation | undefined) ?? null;
+}
+
+/** Count this business's conversations currently flagged for a human. */
+export async function countConversationsNeedingHuman(businessId: string): Promise<number> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT count(*) AS n FROM conversations
+    WHERE business_id = ${businessId} AND handoff_status <> 'ai'`;
+  return Number((rows[0] as unknown as { n: unknown }).n);
 }
 
 /**

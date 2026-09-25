@@ -56,6 +56,10 @@ import { trackFunnel } from "./funnelTrack";
 import { recordClassificationTurn, markEmergencyEscalated } from "./qualityMonitor";
 import { applyPromptOverlay } from "./promptOverrides";
 import { readAiToneValue, type AiTone } from "~/lib/aiTone";
+// P5-4 human takeover: trigger evaluation + flagging (see src/lib/takeover.ts
+// for the pure decision rules). The emergency reason is set by the EXISTING
+// emergency escalation path below — never re-detected here.
+import { evaluateTakeoverForTurn, flagConversationNeedsHuman } from "./takeover";
 
 /** What actually happened with the text-back for one captured lead. */
 export type TextBackOutcome =
@@ -254,8 +258,13 @@ export async function handleInboundSms(args: {
   // emergency escalation could not re-stamp the lead (priority stayed
   // normal while the owner got paged). Backfill the link, best-effort,
   // guarded to conversations that have no lead yet.
+  // P5-4: the same row carries the handoff state — a human-owned thread
+  // ('human') gets NO AI turn below: the message is stored, STOP/START/HELP
+  // compliance commands still run, and the conversation waits for the
+  // plumber. Handing the thread back to the AI resumes full classification.
+  let convRow: Awaited<ReturnType<typeof q.getConversation>> = null;
   try {
-    const convRow = await q.getConversation(args.businessId, args.conversationId);
+    convRow = await q.getConversation(args.businessId, args.conversationId);
     if (convRow && convRow.leadId == null) {
       const leadByPhone = await q.getLatestLeadByPhone(args.businessId, args.from);
       if (leadByPhone) {
@@ -281,6 +290,19 @@ export async function handleInboundSms(args: {
     await tryReplyCommand(args, SMS_TEMPLATES.startConfirm);
   } else if (command === "help") {
     await tryReplyCommand(args, SMS_TEMPLATES.help);
+  }
+
+  // 2b. P5-4 HUMAN TAKEOVER: after a takeover the thread belongs to the
+  //     plumber. Inbound messages are stored (they see them in the inbox)
+  //     and stay honestly 'unclassified' — the AI never reads, classifies,
+  //     or replies on this thread until it is handed back.
+  if (convRow?.handoffStatus === "human") {
+    console.log(
+      "[textback] conversation " +
+        args.conversationId +
+        " is human-owned (takeover) - message stored, no AI turn",
+    );
+    return { command, status: "unclassified", limitReached: null };
   }
 
   // 3. Classification through the P3-B pipeline. The message starts
@@ -353,6 +375,15 @@ export async function handleInboundSms(args: {
     //    notification path, same as new_lead).
     if (pipeline.classification.urgency === "emergency") {
       await escalateEmergency(args, pipeline);
+    } else {
+      // 4b. P5-4 HUMAN-TAKEOVER TRIGGERS for non-emergency turns: angry
+      //     customer language, unclear requests, low-confidence/backstop AI
+      //     turns, and pricing/policy questions the guardrail routed to a
+      //     human. Emergency threads are flagged by escalateEmergency above
+      //     (one escalation path — never duplicated here). Flagging is
+      //     idempotent per thread (ai→needed only), so repeat triggers on an
+      //     already-flagged conversation notify exactly once.
+      await evaluateTakeoverForTurn(args.businessId, args.conversationId, pipeline, args.body);
     }
 
     // 5. Auto-reply: only the pipeline's screened/KB-sourced text, and never
@@ -573,6 +604,21 @@ async function escalateEmergency(
     // P4-A: the escalation COMPLETED — record it so the review queue does not
     // flag this conversation as "emergency without escalation".
     void markEmergencyEscalated(args.businessId, args.conversationId);
+    // P5-4: an emergency IS a human-takeover situation. The flag rides the
+    // SAME escalation (no second detector, no second notification pipeline):
+    // markConversationNeedsHuman is idempotent per thread and the takeover
+    // notification only fires when the state actually moved ai→needed.
+    await flagConversationNeedsHuman(
+      args.businessId,
+      args.conversationId,
+      "emergency",
+      {
+        reasons: ["emergency"],
+        emergencyKey: c.emergencyKey ?? null,
+        emergencySeverity: c.emergencySeverity ?? null,
+        preview: c.serviceNeed ?? "Emergency (unspecified)",
+      },
+    );
     console.log(
       "[textback] EMERGENCY escalated (key " +
         (c.emergencyKey ?? "unclassified") +
@@ -602,6 +648,21 @@ async function tryPipelineReply(
   try {
     if (await q.isSmsOptedOut(args.businessId, args.from)) return null;
     if (!isSmsConfigured()) return null;
+    // P5-4 DOUBLE-SEND RACE GUARD: the plumber may take over the thread
+    // between classification (earlier in this turn) and this send. Re-read
+    // the handoff state immediately before sending — a flagged ('needed') or
+    // human-owned ('human') thread never receives an AI reply.
+    const convNow = await q.getConversation(args.businessId, args.conversationId).catch(() => null);
+    if (convNow && convNow.handoffStatus !== "ai") {
+      console.log(
+        "[textback] takeover in progress on conversation " +
+          args.conversationId +
+          " (handoff " +
+          convNow.handoffStatus +
+          ") - queued AI reply withheld",
+      );
+      return null;
+    }
     const bizRow = await q.getBusiness(args.businessId).catch(() => null);
     let ctx: Awaited<ReturnType<typeof loadPlanUsageContext>> | null = null;
     if (bizRow) {

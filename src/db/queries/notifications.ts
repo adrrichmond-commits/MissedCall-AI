@@ -12,7 +12,7 @@
 import type { Notification } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
-/** Must match the notifications_type_check constraint (007, widened by 009). */
+/** Must match the notifications_type_check constraint (007, widened by 009 + 020). */
 export const NOTIFICATION_TYPES = [
   "new_lead",
   "lead_booked",
@@ -21,6 +21,7 @@ export const NOTIFICATION_TYPES = [
   "appointment_declined",
   "payment_failed",
   "ai_loop_detected",
+  "takeover_needed",
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];

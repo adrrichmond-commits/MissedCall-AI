@@ -32,6 +32,7 @@ import {
 import { buildRoiPanelData } from "~/lib/server/roiPanel";
 import type { RoiPanelData } from "~/lib/server/roi";
 import type { LeadStatus } from "~/db/schema";
+import { TAKEOVER_REASON_LABELS, type TakeoverReasonKey } from "~/lib/takeover";
 
 const LEAD_STATUSES = LEAD_LIFECYCLE_STATUSES;
 /** Legacy statuses still accepted from old clients/filters, mapped forward. */
@@ -864,6 +865,8 @@ export interface InboxListData {
     lastMessageAt: string | null;
     messageCount: number;
     leadId: string | null;
+    /** P5-4: 'ai' | 'needed' | 'human' — the takeover state machine. */
+    handoffStatus: string;
   }[];
   total: number;
 }
@@ -893,6 +896,7 @@ export const getInboxListFn = createServerFn({ method: "GET" })
             lastMessageAt: iso(c.lastMessageAtRaw),
             messageCount: Number(c.messageCount),
             leadId: c.leadId,
+            handoffStatus: c.handoffStatus ?? "ai",
           })),
         },
       };
@@ -916,6 +920,15 @@ export interface InboxThreadData {
     feedbackAt: string | null;
     /** P4-A: the AI actually ran on this conversation (ai_outcome stored). */
     aiRan: boolean;
+    /** P5-4: 'ai' | 'needed' | 'human' — the takeover state machine. */
+    handoffStatus: string;
+    /** Why the thread was flagged (TakeoverReasonKey), when flagged. */
+    handoffReason: string | null;
+    /** Human label for handoffReason, resolved server-side. */
+    handoffLabel: string | null;
+    /** Who took over (user email) and when — visible in the thread. */
+    handoffBy: string | null;
+    handoffAt: string | null;
   };
   messages: {
     id: string;
@@ -952,6 +965,14 @@ export const getConversationThreadFn = createServerFn({ method: "GET" })
             feedbackNote: conv.feedbackNote,
             feedbackAt: iso(conv.feedbackAt),
             aiRan: conv.aiOutcome !== null && conv.aiOutcome !== undefined,
+            handoffStatus: conv.handoffStatus ?? "ai",
+            handoffReason: conv.handoffReason,
+            handoffLabel:
+              conv.handoffReason && conv.handoffReason in TAKEOVER_REASON_LABELS
+                ? TAKEOVER_REASON_LABELS[conv.handoffReason as TakeoverReasonKey]
+                : null,
+            handoffBy: conv.handoffBy,
+            handoffAt: iso(conv.handoffAt),
           },
           messages: messages.map((m) => ({
             id: m.id,
@@ -966,6 +987,74 @@ export const getConversationThreadFn = createServerFn({ method: "GET" })
       return authErrorToResult(e);
     }
   });
+
+// ---------------------------------------------------------------------------
+// P5-4: Human takeover — the plumber steps into an AI conversation from the
+// inbox. Taking over stops ALL AI replies on the thread (in-flight sends are
+// re-checked in textBack.tryPipelineReply immediately before sending); handing
+// it back resumes the AI with the full thread context (messages were never
+// touched). Owner + manager only, like every conversation write.
+// ---------------------------------------------------------------------------
+
+/** Take over a conversation: subsequent customer replies come to you, not the AI. */
+export const takeOverConversationFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { conversationId?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<{ conversationId: string; handoffStatus: string; handoffBy: string | null }>> => {
+      try {
+        const ctx = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        const conversationId =
+          typeof data?.conversationId === "string" ? data.conversationId.trim() : "";
+        if (!conversationId) return { ok: false, status: 400, error: "Conversation id is required." };
+        const existing = await q.getConversation(businessId, conversationId);
+        if (!existing) return { ok: false, status: 404, error: "Conversation not found." };
+        // Idempotent: taking over an already-human thread keeps the original
+        // stamp. 'needed' flags may keep their reason (why the AI needed help).
+        const updated =
+          existing.handoffStatus === "human"
+            ? existing
+            : await q.setConversationHandoff(businessId, conversationId, "human", ctx.user?.email ?? null);
+        if (!updated) return { ok: false, status: 404, error: "Conversation not found." };
+        return {
+          ok: true,
+          data: {
+            conversationId: updated.id,
+            handoffStatus: updated.handoffStatus,
+            handoffBy: updated.handoffBy,
+          },
+        };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
+
+/** Hand the thread back to the AI: it resumes with the full thread context. */
+export const releaseConversationFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { conversationId?: unknown })
+  .handler(
+    async ({ data }): Promise<AppResult<{ conversationId: string; handoffStatus: string }>> => {
+      try {
+        const ctx = await requireActiveWrite("owner", "manager");
+        const businessId = ctx.business.id;
+        const conversationId =
+          typeof data?.conversationId === "string" ? data.conversationId.trim() : "";
+        if (!conversationId) return { ok: false, status: 400, error: "Conversation id is required." };
+        const existing = await q.getConversation(businessId, conversationId);
+        if (!existing) return { ok: false, status: 404, error: "Conversation not found." };
+        // Idempotent: releasing an 'ai' thread is a no-op returning its state.
+        const updated =
+          existing.handoffStatus === "ai"
+            ? existing
+            : await q.setConversationHandoff(businessId, conversationId, "ai", null);
+        if (!updated) return { ok: false, status: 404, error: "Conversation not found." };
+        return { ok: true, data: { conversationId: updated.id, handoffStatus: updated.handoffStatus } };
+      } catch (e) {
+        return authErrorToResult(e);
+      }
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // Appointments (upcoming vs past)

@@ -39,6 +39,7 @@ export const WORKFLOW_KEYS = [
   "emergency_escalation",
   "welcome",
   "payment_failure",
+  "human_takeover",
 ] as const;
 
 export type WorkflowKey = (typeof WORKFLOW_KEYS)[number];
@@ -106,6 +107,13 @@ export const WORKFLOW_CATALOG: Record<WorkflowKey, WorkflowMeta> = {
     key: "payment_failure",
     label: "Payment-failure notice (owner)",
     description: "Texts you when a subscription payment fails so billing never surprises you.",
+    recipient: "owner",
+  },
+  human_takeover: {
+    key: "human_takeover",
+    label: "Human-takeover alert (owner)",
+    description:
+      "Texts you when the AI flags a conversation for a human (emergency, upset customer, unclear request, pricing/policy) so you can take over from the inbox.",
     recipient: "owner",
   },
 };
@@ -178,6 +186,8 @@ export const DEFAULT_WORKFLOW_TEMPLATES: Record<WorkflowKey, string> = {
     "You're live! {businessName}'s AI receptionist is answering and your missed-call texts are on. We'll alert you here when leads come in.",
   payment_failure:
     "{businessName}: your MissedCall AI payment of {amountDue} failed. Update billing in your dashboard to keep your AI running.",
+  human_takeover:
+    "{businessName}: your AI assistant needs you on a text thread — {serviceNeed}. Open your dashboard inbox to take over the conversation.",
 };
 
 export const DEFAULT_WORKFLOW_CONFIGS: Record<WorkflowKey, WorkflowConfig> = {
@@ -189,6 +199,7 @@ export const DEFAULT_WORKFLOW_CONFIGS: Record<WorkflowKey, WorkflowConfig> = {
   emergency_escalation: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.emergency_escalation, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
   welcome: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.welcome, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
   payment_failure: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.payment_failure, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
+  human_takeover: { enabled: true, template: DEFAULT_WORKFLOW_TEMPLATES.human_takeover, cooldownMinutes: 0, hoursBefore: null, delayHours: null },
 };
 
 export const DEFAULT_SMS_WORKFLOWS_CONFIG: SmsWorkflowsConfig = {
@@ -538,6 +549,7 @@ export const NOTIFICATION_CHANNEL_EVENT_TYPES = [
   "appointment_confirmed",
   "payment_failed",
   "emergency",
+  "takeover_needed",
 ] as const;
 
 export type NotificationChannelEventType = (typeof NOTIFICATION_CHANNEL_EVENT_TYPES)[number];
@@ -548,6 +560,7 @@ export const NOTIFICATION_CHANNEL_LABELS: Record<NotificationChannelEventType, s
   appointment_confirmed: "Appointment confirmed",
   payment_failed: "Payment failed",
   emergency: "Emergency escalation",
+  takeover_needed: "AI needs human takeover",
 };
 
 export interface NotificationChannelSettings {
@@ -564,6 +577,7 @@ export const DEFAULT_NOTIFICATION_CHANNEL_SETTINGS: NotificationChannelSettings 
     appointment_confirmed: false,
     payment_failed: true,
     emergency: true,
+    takeover_needed: true,
   },
   sms: {
     new_lead: true,
@@ -571,6 +585,7 @@ export const DEFAULT_NOTIFICATION_CHANNEL_SETTINGS: NotificationChannelSettings 
     appointment_confirmed: false,
     payment_failed: true,
     emergency: true,
+    takeover_needed: true,
   },
 };
 
@@ -623,4 +638,5 @@ export const OWNER_SMS_WORKFLOW_FOR_EVENT: Record<NotificationChannelEventType, 
   appointment_confirmed: null,
   payment_failed: "payment_failure",
   emergency: "emergency_escalation",
+  takeover_needed: "human_takeover",
 };

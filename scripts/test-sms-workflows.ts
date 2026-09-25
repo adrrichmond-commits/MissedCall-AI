@@ -62,10 +62,10 @@ function checkTrue(name: string, cond: boolean, detail = ""): void {
 // ---------------------------------------------------------------------------
 // Catalog integrity
 // ---------------------------------------------------------------------------
-checkTrue("catalog has all 8 workflows", WORKFLOW_KEYS.length === 8);
+checkTrue("catalog has all 9 workflows (P5-4 added human_takeover)", WORKFLOW_KEYS.length === 9);
 checkTrue("catalog covers every key", WORKFLOW_KEYS.every((k) => WORKFLOW_CATALOG[k]));
 const ownerFlows = WORKFLOW_KEYS.filter((k) => WORKFLOW_CATALOG[k].recipient === "owner");
-check("owner workflows", ownerFlows, ["new_lead", "emergency_escalation", "welcome", "payment_failure"]);
+check("owner workflows", ownerFlows, ["new_lead", "emergency_escalation", "welcome", "payment_failure", "human_takeover"]);
 check("text-back is a customer workflow", WORKFLOW_CATALOG.missed_call_recovery.recipient, "customer");
 
 // ---------------------------------------------------------------------------

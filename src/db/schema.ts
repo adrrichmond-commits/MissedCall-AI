@@ -297,6 +297,17 @@ export interface FollowUpTask {
 // Conversations & messages
 // ---------------------------------------------------------------------------
 
+/**
+ * P5-4 human-takeover state (migration 020):
+ *   'ai'     — the AI assistant owns the thread (default);
+ *   'needed' — a trigger flagged the thread for a human (emergency, angry
+ *              customer, unclear request, low-confidence turn, pricing/
+ *              policy outside the AI's rules);
+ *   'human'  — a person took over: inbound messages go to the plumber, the
+ *              AI sends nothing, until the thread is handed back.
+ */
+export type ConversationHandoffStatus = 'ai' | 'needed' | 'human';
+
 export interface Conversation {
   id: string;
   businessId: string;
@@ -311,6 +322,16 @@ export interface Conversation {
   feedbackAt: Date | null;
   /** Migration 019 (P4-A): AI outcome signals; NULL = the AI never ran here. */
   aiOutcome: AiOutcome | null;
+  /** Migration 020 (P5-4): human-takeover state machine (see the type above). */
+  handoffStatus: ConversationHandoffStatus;
+  /** Why the thread was flagged (a TakeoverReasonKey); NULL on plain 'ai'. */
+  handoffReason: string | null;
+  /** Trigger evidence: { reasons, preview, confidence, tier, tierReason }. */
+  handoffDetail: Record<string, unknown> | null;
+  /** Who took over (user email) — stamped on takeover, cleared on release. */
+  handoffBy: string | null;
+  /** When the flag was raised / the takeover happened. */
+  handoffAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
