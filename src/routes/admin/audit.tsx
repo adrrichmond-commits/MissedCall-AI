@@ -68,6 +68,7 @@ function AuditPage() {
         </div>
         <nav className="flex items-center gap-3 text-sm">
           <Link to="/admin/accounts" search={{}} className="text-brand-700 hover:underline">Accounts</Link>
+          <Link to="/admin/metrics" search={{}} className="text-brand-700 hover:underline">Metrics</Link>
           <Link to="/admin/health" search={{}} className="text-brand-700 hover:underline">System health</Link>
           <Link to="/admin/audit" search={{}} className="font-semibold text-brand-700">Audit log</Link>
         </nav>

@@ -54,6 +54,14 @@ import { funnelStageCounts } from "~/db/queries/funnel";
 import { listPromptVersions } from "~/db/queries/prompts";
 import { funnelSteps, overallConversion } from "~/lib/analytics/funnel";
 import { PROMPT_SURFACES, PROMPT_SURFACE_LABELS, promptVersionView } from "~/lib/analytics/prompts";
+// P5-6: business-metrics view (pure compute + cross-business SQL read).
+import { adminMetricsRaw } from "~/db/queries/adminMetrics";
+import {
+  computeAdminMetrics,
+  sanitizeAdminMetricsFilters,
+  type AdminMetricsFilters,
+  type AdminMetricsView,
+} from "~/lib/server/adminMetrics";
 
 // ---------------------------------------------------------------------------
 // Shared result shapes (adminFns.ts re-exports these)
@@ -534,6 +542,34 @@ export async function adminPromptsPage(): Promise<AdminResult<P4APromptsView>> {
       }),
     );
     return { ok: true, data: { surfaces } };
+  } catch (e) {
+    return adminErrorToResult(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// P5-6: business metrics page (read-only cross-business aggregates)
+// ---------------------------------------------------------------------------
+
+export type { AdminMetricsFilters, AdminMetricsView };
+
+/**
+ * The /admin/metrics payload: MRR, trial/paying account breakdown, trial→paid
+ * conversion, plan distribution, calls processed, and the accounts-needing-
+ * attention lists. READ-ONLY and gate-first, exactly like every other plain
+ * read in this module. Filters arrive from route search params and are
+ * whitelist-sanitized before they touch SQL.
+ */
+export async function adminMetricsPage(data: {
+  plan?: string;
+  window?: string;
+}): Promise<AdminResult<AdminMetricsView>> {
+  try {
+    await requirePlatformAdmin();
+    const filters = sanitizeAdminMetricsFilters(data);
+    const now = new Date();
+    const raw = await adminMetricsRaw(filters, now);
+    return { ok: true, data: computeAdminMetrics(raw, filters, now) };
   } catch (e) {
     return adminErrorToResult(e);
   }

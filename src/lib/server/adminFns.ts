@@ -29,17 +29,19 @@ import {
   adminGate,
   adminHealthPage,
   adminImpersonationState,
+  adminMetricsPage,
   stripeConfiguredBool,
   type AdminAccountDetailView,
   type AdminAccountsPage,
   type AdminAuditView,
   type AdminHealthView,
+  type AdminMetricsView,
   type AdminResult,
 } from "./adminReads";
 
 // Re-exported for the route files, which import these types from here.
-export type { AdminAccountView, AdminAccountDetailView, AdminAuditView, AdminHealthView } from "./adminReads";
-export type { AdminResult } from "./adminReads";
+export type { AdminAccountView, AdminAccountDetailView, AdminAuditView, AdminHealthView, AdminMetricsView } from "./adminReads";
+export type { AdminResult, AdminMetricsFilters } from "./adminReads";
 
 // ---------------------------------------------------------------------------
 // Impersonation state (banner) — readable by any signed-in session
@@ -189,6 +191,17 @@ export const adminHealthFn = createServerFn({ method: "GET" }).handler(
     return adminHealthPage();
   },
 );
+
+// ---------------------------------------------------------------------------
+// P5-6: business metrics page — RPC wrapper delegating to ./adminReads
+// ---------------------------------------------------------------------------
+
+/** The /admin/metrics payload (gate + read live in the plain fn). */
+export const adminMetricsFn = createServerFn({ method: "GET" })
+  .validator((d: unknown) => (d ?? {}) as { plan?: string; window?: string })
+  .handler(async ({ data }): Promise<AdminResult<AdminMetricsView>> => {
+    return adminMetricsPage(data);
+  });
 
 /** Kept for backwards compatibility with earlier imports of this helper. */
 export { stripeConfiguredBool };
