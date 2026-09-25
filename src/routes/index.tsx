@@ -4,6 +4,9 @@ import { Button } from "~/components/ui/Button";
 import { Nav } from "~/components/marketing/Nav";
 import { DashboardMockup } from "~/components/marketing/DashboardMockup";
 import { Icon, type IconName } from "~/components/marketing/icons";
+// P4-V: pricing renders from the ONE locked config module — never literals.
+// Starter $149/mo, Pro $249/mo, 14-day free trial (owner decision).
+import { PLANS, formatPlanPrice, TRIAL_DAYS } from "~/lib/pricing";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -20,26 +23,24 @@ const problemReasons: { icon: IconName; text: string }[] = [
   { icon: "phone-off", text: "Unable to reach the phone in time" },
 ];
 
+/**
+ * P4-V: how it works in 3 steps, plumbing-specific.
+ */
 const solutionSteps: { n: string; title: string; body: string }[] = [
   {
     n: "1",
-    title: "Customer Calls",
-    body: "A homeowner needs a plumber and calls your business.",
+    title: "You miss the call",
+    body: "You're under a sink, on a ladder, or it's 9pm. The homeowner calls the next plumber on the list — usually within minutes.",
   },
   {
     n: "2",
-    title: "You Miss the Call",
-    body: "You're on a job, driving, or after hours — and can't pick up.",
+    title: "MissedCall AI texts back instantly",
+    body: "Your caller gets an automatic text from your business. The AI asks what's wrong, captures the problem and urgency, and flags emergencies right away.",
   },
   {
     n: "3",
-    title: "MissedCall AI Follows Up",
-    body: "The customer automatically gets a text and the conversation begins.",
-  },
-  {
-    n: "4",
-    title: "Lead Gets Recovered",
-    body: "The conversation qualifies the customer and helps schedule the job.",
+    title: "A qualified lead lands on your dashboard",
+    body: "You get the caller's name, number, and what they need — plus an appointment request when they want the job. Call back and win the work.",
   },
 ];
 
@@ -76,76 +77,32 @@ const features: { icon: IconName; title: string; body: string }[] = [
   },
 ];
 
-const tiers = [
-  {
-    name: "Starter",
-    price: "$79",
-    cadence: "/month",
-    highlight: false,
-    features: [
-      "1 phone number",
-      "250 AI conversations/month",
-      "Missed-call follow-up",
-      "Lead management",
-      "SMS conversations",
-      "Basic analytics",
-    ],
-  },
-  {
-    name: "Growth",
-    price: "$149",
-    cadence: "/month",
-    highlight: true,
-    features: [
-      "2 phone numbers",
-      "750 AI conversations/month",
-      "Everything in Starter",
-      "Appointment booking",
-      "Advanced analytics",
-      "Team members",
-    ],
-  },
-  {
-    name: "Pro",
-    price: "$299",
-    cadence: "/month",
-    highlight: false,
-    features: [
-      "5 phone numbers",
-      "2,000 AI conversations/month",
-      "Everything in Growth",
-      "Multiple locations",
-      "Advanced reporting",
-      "Custom AI instructions",
-      "More team members",
-    ],
-  },
-];
-
+/**
+ * P4-V FAQs — the five questions the owner specified, answered honestly.
+ * No "coming soon" hedging: the text-back, lead capture, dashboard, trial,
+ * and cancellation flows all exist today. Live calling/SMS delivery is
+ * carrier-gated (A2P) for new accounts — the trial setup itself is real.
+ */
 const faqs: { q: string; a: string }[] = [
   {
-    q: "What happens when I miss a call?",
-    a: "MissedCall AI can automatically follow up with the caller by text and begin collecting information about their request.",
+    q: "What happens when a call is missed?",
+    a: `Within moments, MissedCall AI texts the caller from your business number, starts the conversation for you, and captures who they are, what's wrong, and how urgent it is. The lead — with a full summary — lands on your dashboard so you can call back and book the job. No more voicemails nobody listens to.`,
   },
   {
-    q: "Does MissedCall AI replace my phone?",
-    a: "No. It is designed to work alongside your existing business phone workflow.",
+    q: "How does the AI text back?",
+    a: `It works like a trained dispatcher on your phone line: it asks what the customer needs, identifies the plumbing problem (leak, water heater, clog, no heat), asks for the address, and gauges urgency. It can request an appointment on your behalf, and it hands the conversation to you whenever you want to take over — every message is in your inbox.`,
   },
   {
-    q: "Can I take over the conversation?",
-    a: "Yes. Businesses will be able to switch from AI mode to human mode.",
+    q: "Is it really AI?",
+    a: `Yes. MissedCall AI uses a modern AI language model trained with a plumbing service knowledge base and strict guardrails: it captures and qualifies, it doesn't quote prices, diagnose over the phone, or promise arrival times. Anything sensitive or urgent is escalated straight to you. You can review every conversation it has.`,
   },
   {
-    q: "Can it book appointments?",
-    a: "Yes. The full product will support appointment scheduling based on the availability configured by the business.",
+    q: "What about emergencies?",
+    a: `Emergency language — burst pipes, flooding, gas smell, no water — is detected immediately. The lead is flagged as an emergency at the top of your dashboard so you can respond fast, and for immediately dangerous situations the AI tells the caller to reach emergency services or the utility first. It never tries to talk someone through a dangerous repair.`,
   },
   {
-    q: "Can I customize the AI?",
-    a: "Yes. Businesses will be able to customize their services, business information, and AI instructions.",
-  },
-  {
-    q: "Is there a free trial?",
-    a: "Yes. The application should support a free trial architecture.",
+    q: "How do I cancel?",
+    a: `Anytime, from Settings → Billing — no phone call and no cancellation fee. You keep access until the end of your current billing period. Every plan starts with a ${TRIAL_DAYS}-day free trial, so you can see the recovered leads before you pay.`,
   },
 ];
 
@@ -189,15 +146,15 @@ function Hero() {
             real jobs.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Button variant="primary" size="lg" href="#pricing">
-              Start Free Trial
+            <Button variant="primary" size="lg" href="/signup">
+              Start Your Free Trial
             </Button>
             <Button variant="secondary" size="lg" href="#how-it-works">
               See How It Works
             </Button>
           </div>
           <p className="mt-4 text-sm text-slate-500">
-            Built for busy plumbing companies. No credit card to start.
+            Built for busy plumbing companies. {TRIAL_DAYS}-day free trial — no credit card to start.
           </p>
         </div>
 
@@ -254,7 +211,7 @@ function Solution() {
           eyebrow="The Solution"
           title="Your missed calls shouldn't disappear."
         />
-        <ol className="mx-auto mt-12 grid max-w-5xl grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        <ol className="mx-auto mt-12 grid max-w-5xl grid-cols-1 gap-6 sm:grid-cols-3">
           {solutionSteps.map((s, i) => (
             <li key={s.n} className="relative">
               <div className="flex h-full flex-col rounded-xl border border-slate-200 bg-white p-6">
@@ -305,75 +262,69 @@ function Features() {
   );
 }
 
-function SocialProof() {
-  return (
-    <section className="bg-white py-16 sm:py-24">
-      <div className="mx-auto max-w-4xl px-4 sm:px-6">
-        <SectionHeading eyebrow="Customers" title="Trusted by plumbing teams" />
-        <div className="mt-12 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center">
-          <p className="text-lg font-medium text-slate-500">
-            Customer testimonial will appear here.
-          </p>
-          <p className="mt-2 text-sm text-slate-400">
-            Placeholder — replace with a real customer quote once available.
-          </p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
+/**
+ * P4-V: pricing renders straight from src/lib/pricing.ts (PLANS) — the same
+ * module the billing page and Stripe checkout read. Two owner-locked plans:
+ * Starter $149/mo, Pro $249/mo, every plan with the 14-day free trial.
+ */
 function Pricing() {
   return (
     <section id="pricing" className="scroll-mt-24 bg-slate-50 py-16 sm:py-24">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <SectionHeading
           eyebrow="Pricing"
-          title="Simple pricing that pays for itself"
-          body="Every plan includes a free trial. Start free and upgrade when you're ready."
+          title="One recovered job pays for the month"
+          body={`Every plan starts with a ${TRIAL_DAYS}-day free trial. No credit card to start — cancel anytime.`}
         />
-        <div className="mt-12 grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {tiers.map((t) => (
-            <div
-              key={t.name}
-              className={`relative flex flex-col rounded-2xl border bg-white p-6 ${
-                t.highlight
-                  ? "border-brand-600 shadow-lg ring-1 ring-brand-600"
-                  : "border-slate-200"
-              }`}
-            >
-              {t.highlight && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                  <Badge tone="brand">Most Popular</Badge>
+        <div className="mx-auto mt-12 grid max-w-4xl grid-cols-1 gap-6 lg:grid-cols-2">
+          {PLANS.map((plan) => {
+            const highlight = plan.id === "pro";
+            return (
+              <div
+                key={plan.id}
+                className={`relative flex flex-col rounded-2xl border bg-white p-6 ${
+                  highlight
+                    ? "border-brand-600 shadow-lg ring-1 ring-brand-600"
+                    : "border-slate-200"
+                }`}
+              >
+                {highlight && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                    <Badge tone="brand">Recommended</Badge>
+                  </div>
+                )}
+                <h3 className="text-lg font-semibold text-slate-900">{plan.name}</h3>
+                <p className="mt-1 text-sm text-slate-600">{plan.tagline}</p>
+                <div className="mt-4 flex items-baseline gap-1">
+                  <span className="text-4xl font-extrabold tracking-tight text-slate-900">
+                    ${formatPlanPrice(plan)}
+                  </span>
+                  <span className="text-sm text-slate-500">/month</span>
                 </div>
-              )}
-              <h3 className="text-lg font-semibold text-slate-900">{t.name}</h3>
-              <div className="mt-3 flex items-baseline gap-1">
-                <span className="text-4xl font-extrabold tracking-tight text-slate-900">
-                  {t.price}
-                </span>
-                <span className="text-sm text-slate-500">{t.cadence}</span>
+                <ul className="mt-6 flex-1 space-y-3">
+                  {plan.features.map((f) => (
+                    <li key={f} className="flex items-start gap-2 text-sm text-slate-600">
+                      <Icon name="check-circle" className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" />
+                      <span>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-4 text-xs text-slate-400">
+                  {TRIAL_DAYS}-day free trial · cancel anytime
+                </p>
+                <div className="mt-4">
+                  <Button
+                    variant={highlight ? "primary" : "secondary"}
+                    size="lg"
+                    href="/signup"
+                    className="w-full"
+                  >
+                    Start Your Free Trial
+                  </Button>
+                </div>
               </div>
-              <ul className="mt-6 flex-1 space-y-3">
-                {t.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2 text-sm text-slate-600">
-                    <Icon name="check-circle" className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" />
-                    <span>{f}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-8">
-                <Button
-                  variant={t.highlight ? "primary" : "secondary"}
-                  size="lg"
-                  href="#pricing"
-                  className="w-full"
-                >
-                  Start Free Trial
-                </Button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>
@@ -437,8 +388,8 @@ function Footer() {
             <a href="/login" className="text-slate-600 hover:text-slate-900">
               Log in
             </a>
-            <Button variant="primary" size="sm" href="#pricing">
-              Start Free Trial
+            <Button variant="primary" size="sm" href="/signup">
+              Start Your Free Trial
             </Button>
           </nav>
         </div>
@@ -461,7 +412,6 @@ function Home() {
         <Problem />
         <Solution />
         <Features />
-        <SocialProof />
         <Pricing />
         <Faq />
       </main>

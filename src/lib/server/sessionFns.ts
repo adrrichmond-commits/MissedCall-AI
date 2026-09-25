@@ -32,6 +32,8 @@ export interface CurrentUserView {
   businessId: string;
   businessName: string;
   businessPlan: string;
+  /** True only inside the seeded demo business — drives the DEMO banner (P4-V). */
+  isDemoBusiness: boolean;
   /** ISO string for client rendering. */
   sessionExpiresAt: string;
 }

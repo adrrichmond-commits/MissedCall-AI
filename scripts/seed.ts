@@ -474,8 +474,8 @@ async function main(): Promise<void> {
 
   // --- business --------------------------------------------------------------
   const [biz] = (await query(
-    `INSERT INTO businesses (name, phone, email, website, address_line1, city, state, postal_code, timezone, plan, trial_ends_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now() + make_interval(days => $11::int)) RETURNING id`,
+    `INSERT INTO businesses (name, phone, email, website, address_line1, city, state, postal_code, timezone, plan, trial_ends_at, is_demo)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now() + make_interval(days => $11::int), true) RETURNING id`,
     [BUSINESS.name, BUSINESS.phone, BUSINESS.email, BUSINESS.website, BUSINESS.addressLine1,
       BUSINESS.city, BUSINESS.state, BUSINESS.postalCode, BUSINESS.timezone, BUSINESS.plan,
       BUSINESS.trialEndsInDays],

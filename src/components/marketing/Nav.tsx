@@ -51,11 +51,11 @@ export function Nav() {
         </div>
 
         <div className="hidden items-center gap-2 md:flex">
-          <Button variant="secondary" size="md" href="#demo">
-            View Demo
+          <Button variant="secondary" size="md" href="#how-it-works">
+            See How It Works
           </Button>
-          <Button variant="primary" size="md" href="#pricing">
-            Start Free Trial
+          <Button variant="primary" size="md" href="/signup">
+            Start Your Free Trial
           </Button>
         </div>
 
@@ -104,11 +104,11 @@ export function Nav() {
               Login
             </a>
             <div className="mt-2 flex flex-col gap-2">
-              <Button variant="secondary" href="#demo">
-                View Demo
+              <Button variant="secondary" href="#how-it-works">
+                See How It Works
               </Button>
-              <Button variant="primary" href="#pricing">
-                Start Free Trial
+              <Button variant="primary" href="/signup">
+                Start Your Free Trial
               </Button>
             </div>
           </div>

@@ -7,6 +7,7 @@ import { PLANS } from "~/lib/pricing";
 import { AppShell } from "~/components/app/AppShell";
 import { VerifyEmailBanner } from "~/components/app/VerifyEmailBanner";
 import { AdminViewingBanner } from "~/components/app/AdminViewingBanner";
+import { DemoBanner } from "~/components/app/DemoBanner";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: async (): Promise<{ user: CurrentUserView } | void> => {
@@ -44,6 +45,7 @@ function AppLayout() {
   const { user } = Route.useRouteContext() as { user: CurrentUserView };
   return (
     <AppShell user={user}>
+      {user.isDemoBusiness ? <DemoBanner /> : null}
       <AdminViewingBanner />
       {!user.emailVerified ? <VerifyEmailBanner /> : null}
       <TrialBanner role={user.role} />
