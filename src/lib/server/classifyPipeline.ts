@@ -96,6 +96,15 @@ export interface PipelineInput {
   hours: PipelineHoursRow[] | null;
   /** null = LLM not configured (LLM_API_KEY absent) → rules are the default. */
   llm: PipelineLlm | null;
+  /**
+   * P5-1: the owner's free-text emergency instructions
+   * (settings → emergency prefs → emergencyInstructions). LLM tier only —
+   * appended to the system prompt so the model follows the shop's emergency
+   * protocol. The rules tier CANNOT use free text (its emergency replies are
+   * the KB safety scripts, verbatim by design) — this is documented honest
+   * behavior, not a gap.
+   */
+  emergencyInstructions?: string | null;
 }
 
 /** Where the produced reply text came from — stamped as `replySource`. */
@@ -202,10 +211,13 @@ export function buildServiceCatalogContext(): string {
 /**
  * The full classifier/advice system prompt: the KB guardrail policy
  * (buildSystemPrompt) + the service catalog + the STRICT JSON task spec.
- * Exported for tests; production and tests see byte-identical prompts.
+ * When the owner saved emergency instructions they are appended as a clearly
+ * labeled block (P5-1) — the KB guardrail policy stays FIRST and is never
+ * weakened by them. Exported for tests; production and tests see
+ * byte-identical prompts.
  */
-export function buildClassifierSystemPrompt(): string {
-  return [
+export function buildClassifierSystemPrompt(ownerInstructions?: string | null): string {
+  const prompt = [
     buildSystemPrompt(),
     "",
     "SERVICE CATALOG (classify serviceNeed against these; do not invent services):",
@@ -223,7 +235,18 @@ export function buildClassifierSystemPrompt(): string {
     "Never promise a capability you do not have (no firm booking, no prices, no",
     "warranty terms). Otherwise reply = null. Omit nothing the message supports;",
     "use null for anything not stated. Never invent values.",
-  ].join("\n");
+  ];
+  const instructions = typeof ownerInstructions === "string" ? ownerInstructions.trim() : "";
+  if (instructions.length > 0) {
+    prompt.push(
+      "",
+      "BUSINESS EMERGENCY INSTRUCTIONS (written by the shop owner; follow them",
+      "for emergencies and safety concerns, but NEVER override the SAFETY POLICY",
+      "above — 911 routing and the no-prices rule always win):",
+      instructions,
+    );
+  }
+  return prompt.join("\n");
 }
 
 /** Matching KB FAQ entry for a body, or null (pure helper, exported for tests). */
@@ -255,8 +278,8 @@ function llmStr(v: unknown): string | null {
  * unreachable, times out, or returns anything unparseable — the caller then
  * falls back to the rules tier for THIS turn (honest degradation).
  */
-async function llmClassify(llm: PipelineLlm, body: string): Promise<MessageClassification | null> {
-  const raw = await llm.complete(buildClassifierSystemPrompt(), body, { maxTokens: 500, timeoutMs: 15_000 });
+async function llmClassify(llm: PipelineLlm, body: string, ownerInstructions?: string | null): Promise<MessageClassification | null> {
+  const raw = await llm.complete(buildClassifierSystemPrompt(ownerInstructions), body, { maxTokens: 500, timeoutMs: 15_000 });
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
@@ -343,7 +366,7 @@ export async function runClassificationPipeline(input: PipelineInput): Promise<P
 
   if (input.llm) {
     try {
-      const parsed = await llmClassify(input.llm, body);
+      const parsed = await llmClassify(input.llm, body, input.emergencyInstructions);
       if (parsed) {
         base = parsed;
         tier = "llm";

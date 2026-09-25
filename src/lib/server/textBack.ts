@@ -426,8 +426,38 @@ async function runInboundPipeline(
     timezone: business?.timezone ?? null,
     hours: hours && hours.length > 0 ? hours : null,
     llm,
+    // P5-1: the owner's emergency instructions reach the AI — the settings
+    // surface promises "the AI follows these on emergency calls", so the
+    // pipeline must actually receive them (LLM tier appends them to the
+    // system prompt; the rules tier's KB safety scripts are verbatim by
+    // design and use free text only for context, never for output).
+    emergencyInstructions: readEmergencyInstructions(
+      (business as unknown as { settings?: Record<string, unknown> } | null)?.settings,
+    ),
   };
   return runClassificationPipeline(input);
+}
+
+/**
+ * P5-1: extract the owner's emergency instructions from the business settings
+ * jsonb. saveEmergencyPrefsFn persists the prefs FLAT on the settings blob
+ * (`settings.emergencyInstructions`); the nested `emergencyPrefs.*` shape is
+ * also accepted for forward-compatibility. Pure + tolerant of every malformed
+ * shape — a broken settings blob yields null, never a throw. Exported for the
+ * journey suite to prove the settings → AI handoff.
+ */
+export function readEmergencyInstructions(bizSettings: unknown): string | null {
+  const s = (bizSettings ?? {}) as {
+    emergencyInstructions?: unknown;
+    emergencyPrefs?: { emergencyInstructions?: unknown };
+  };
+  const raw =
+    typeof s.emergencyInstructions === "string"
+      ? s.emergencyInstructions
+      : s.emergencyPrefs?.emergencyInstructions;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
