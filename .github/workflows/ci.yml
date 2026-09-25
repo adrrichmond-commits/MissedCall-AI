@@ -61,7 +61,7 @@ jobs:
           # P4-R audit: knock + receptionist are also mock-based, credential-free
           # suites (verified: "no DB, no network, no real provider keys" in their
           # headers) — they were missing from this list; added.
-          suites="admin billing classify crm email kb pipeline revenue sms sms-workflows stripe voice infra p4v p4a knock receptionist journey p52-roi p53-settings"
+          suites="admin billing classify crm email kb pipeline revenue sms sms-workflows stripe voice infra p4v p4a knock receptionist journey p52-roi p53-settings p54-takeover"
           for t in $suites; do
             echo "::group::bun scripts/test-$t.ts"
             if bun "scripts/test-$t.ts"; then

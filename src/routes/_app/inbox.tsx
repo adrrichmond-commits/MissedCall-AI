@@ -1,6 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { getInboxListFn, getConversationThreadFn, setConversationFeedbackFn, type InboxThreadData } from "~/lib/server/appFns";
+import {
+  getInboxListFn,
+  getConversationThreadFn,
+  setConversationFeedbackFn,
+  takeOverConversationFn,
+  releaseConversationFn,
+  type InboxThreadData,
+} from "~/lib/server/appFns";
 import { EmptyState, ErrorState, PageHeader, PageLoading, StatusBadge } from "~/components/app/pageStates";
 import { formatDateTime } from "~/lib/format";
 
@@ -112,7 +119,22 @@ function InboxPage() {
                       <p className="truncate text-sm font-semibold text-slate-900">
                         {c.leadName ?? c.customerPhone}
                       </p>
-                      <StatusBadge status={c.status} />
+                      <div className="flex items-center gap-1.5">
+                        {/* P5-4: takeover state badges in the list. */}
+                        {c.handoffStatus === "needed" ? (
+                          <span
+                            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800"
+                            data-testid={`handoff-needed-${c.id}`}
+                          >
+                            Needs takeover
+                          </span>
+                        ) : c.handoffStatus === "human" ? (
+                          <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-800">
+                            You
+                          </span>
+                        ) : null}
+                        <StatusBadge status={c.status} />
+                      </div>
                     </div>
                     <p className="mt-0.5 truncate text-sm text-slate-600">
                       {c.lastMessageDirection === "outbound" ? "You: " : ""}
@@ -171,9 +193,58 @@ function InboxPage() {
                         View lead →
                         </a>
                     ) : null}
+                    {/* P5-4: proactive takeover is available on every AI-owned thread. */}
+                    {thread.conversation.handoffStatus === "ai" ? (
+                      <TakeoverButton
+                        conversationId={thread.conversation.id}
+                        action="takeover"
+                        onDone={() => setThreadNonce((n) => n + 1)}
+                      />
+                    ) : null}
                   </div>
                 </div>
               </div>
+
+              {/* P5-4: takeover state banner — visible at the top of the thread. */}
+              {thread.conversation.handoffStatus === "needed" ? (
+                <div
+                  className="mx-4 mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-3 text-sm text-amber-900 sm:mx-5"
+                  data-testid="takeover-needed-banner"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p>
+                      <span className="font-semibold">The AI needs your help</span>
+                      {thread.conversation.handoffLabel ? ` — ${thread.conversation.handoffLabel}.` : "."}{" "}
+                      Take over to handle this customer yourself. The AI stays quiet on this thread until you hand it back.
+                    </p>
+                    <TakeoverButton
+                      conversationId={thread.conversation.id}
+                      action="takeover"
+                      onDone={() => setThreadNonce((n) => n + 1)}
+                    />
+                  </div>
+                </div>
+              ) : thread.conversation.handoffStatus === "human" ? (
+                <div
+                  className="mx-4 mt-3 rounded-lg border border-sky-300 bg-sky-50 px-3.5 py-3 text-sm text-sky-900 sm:mx-5"
+                  data-testid="takeover-active-banner"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p>
+                      <span className="font-semibold">You&apos;re handling this conversation</span>
+                      {thread.conversation.handoffBy ? ` (took over: ${thread.conversation.handoffBy}` : " ("}
+                      {thread.conversation.handoffAt ? `, ${formatDateTime(thread.conversation.handoffAt)}` : ""}
+                      {thread.conversation.handoffBy ? ")" : ""}). New customer replies come to you — the AI will not
+                      respond until you hand the thread back.
+                    </p>
+                    <TakeoverButton
+                      conversationId={thread.conversation.id}
+                      action="release"
+                      onDone={() => setThreadNonce((n) => n + 1)}
+                    />
+                  </div>
+                </div>
+              ) : null}
 
               <div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5" aria-live="polite">
                 {thread.messages.map((m) => (
@@ -196,7 +267,9 @@ function InboxPage() {
 
               <div className="border-t border-slate-100 px-4 py-3 sm:px-5">
                 <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Replying from here isn't available yet — the AI assistant handles customer replies. Phase 2 adds manual sending.
+                  {thread.conversation.handoffStatus === "human"
+                    ? "You've taken over — the customer's replies land in this thread for you. Sending your own texts from here isn't available yet (call the customer directly in the meantime)."
+                    : "The AI assistant handles customer replies here. Take over any thread to answer it yourself — the AI steps back until you hand it back."}
                 </p>
                 {/* P4-A: "How did MissedCall AI handle this?" — per-conversation
                     owner feedback. Ratings land in the AI quality view. */}
@@ -283,5 +356,54 @@ function ConversationFeedback(props: {
         className="mt-2 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-xs focus:border-brand-500 focus:outline-none"
       />
     </div>
+  );
+}
+
+/** P5-4: takeover / hand-back action for one conversation thread. */
+function TakeoverButton(props: {
+  conversationId: string;
+  action: "takeover" | "release";
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res =
+        props.action === "takeover"
+          ? await takeOverConversationFn({ data: { conversationId: props.conversationId } })
+          : await releaseConversationFn({ data: { conversationId: props.conversationId } });
+      if (res.ok) {
+        props.onDone();
+      } else {
+        setError(res.error);
+      }
+    } catch {
+      setError("That didn't go through. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const takeover = props.action === "takeover";
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => void run()}
+        disabled={busy}
+        data-testid={takeover ? "takeover-btn" : "release-btn"}
+        className={
+          "rounded-md px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 " +
+          (takeover ? "bg-amber-600 hover:bg-amber-700" : "bg-sky-600 hover:bg-sky-700")
+        }
+      >
+        {busy ? "Working…" : takeover ? "Take over" : "Hand back to AI"}
+      </button>
+      {error ? <span className="text-xs text-red-700">{error}</span> : null}
+    </span>
   );
 }
