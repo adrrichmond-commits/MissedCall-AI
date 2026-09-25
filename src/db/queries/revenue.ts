@@ -96,6 +96,28 @@ export async function missedCallRecoveryCounts(
   return { missedCalls: toNumber(r.missedCalls), recovered: toNumber(r.recovered) };
 }
 
+/**
+ * P5-2: conversations where the CUSTOMER replied — ≥1 inbound message.
+ * Business-scoped on both tables (the isolation boundary is the WHERE clause).
+ * A text-back the customer never answered counts as handled-by-AI but NOT as
+ * a customer reply, so the funnel can show the honest gap between the two.
+ */
+export async function customerReplyCount(businessId: string): Promise<number> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT count(*) AS n
+    FROM conversations c
+    WHERE c.business_id = ${businessId}
+      AND EXISTS (
+        SELECT 1 FROM messages m
+        WHERE m.conversation_id = c.id
+          AND m.business_id = ${businessId}
+          AND m.direction = 'inbound'
+      )`;
+  return toNumber((rows[0] as unknown as Record<string, unknown>).n);
+}
+
 /** Appointment rows tied to recovered missed-call leads (business-scoped). */
 export async function appointmentsFromRecoveredLeads(businessId: string): Promise<number> {
   assertServer();

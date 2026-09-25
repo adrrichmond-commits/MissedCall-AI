@@ -173,6 +173,24 @@ function AnalyticsPage() {
             ))}
           </div>
         )}
+        {/* P5-2: the ROI line — estimated, honestly labeled, cost from the pricing config */}
+        {data.roi ? (
+          <p
+            className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500"
+            data-testid="analytics-roi-line"
+          >
+            ROI this month:{" "}
+            <span className="font-semibold text-slate-900">
+              {data.roi.estimated.roiMultiple == null ? "—" : `${data.roi.estimated.roiMultiple}×`}
+            </span>
+            {data.roi.estimateFlags.roiMultiple ? (
+              <span className="ml-1 font-semibold text-amber-700">(estimate)</span>
+            ) : null}
+            {data.roi.billing.monthlyCostCents > 0
+              ? ` — estimated revenue recovered this month ÷ ${formatMoney(data.roi.billing.monthlyCostCents)}/mo (${data.roi.billing.planName}).`
+              : " — free trial, no billing yet."}
+          </p>
+        ) : null}
       </section>
 
       {/* P3-D: the captured-calls funnel, top to bottom */}
