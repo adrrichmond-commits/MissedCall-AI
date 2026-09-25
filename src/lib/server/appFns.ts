@@ -843,6 +843,12 @@ export interface InboxThreadData {
     leadName: string | null;
     serviceNeed: string | null;
     leadId: string | null;
+    /** P4-A: the owner's feedback on how the AI handled this thread. */
+    feedbackRating: "up" | "down" | null;
+    feedbackNote: string | null;
+    feedbackAt: string | null;
+    /** P4-A: the AI actually ran on this conversation (ai_outcome stored). */
+    aiRan: boolean;
   };
   messages: {
     id: string;
@@ -875,6 +881,10 @@ export const getConversationThreadFn = createServerFn({ method: "GET" })
             leadName: lead?.contactName ?? null,
             serviceNeed: lead?.serviceNeed ?? null,
             leadId: conv.leadId,
+            feedbackRating: conv.feedbackRating,
+            feedbackNote: conv.feedbackNote,
+            feedbackAt: iso(conv.feedbackAt),
+            aiRan: conv.aiOutcome !== null && conv.aiOutcome !== undefined,
           },
           messages: messages.map((m) => ({
             id: m.id,
@@ -1069,3 +1079,134 @@ export const getRevenueFunnelFn = createServerFn({ method: "GET" }).handler(
 function funnelStagesFor(funnel: FunnelCounts): { key: string; label: string; count: number }[] {
   return funnelStages(funnel);
 }
+
+// ---------------------------------------------------------------------------
+// P4-A: customer feedback + AI-quality review queue
+// ---------------------------------------------------------------------------
+
+import * as qq from "~/db/queries/quality";
+import { recomputeConversationFlags } from "~/lib/server/qualityMonitor";
+import { feedbackAggregate } from "~/lib/analytics/feedback";
+import { REVIEW_REASON_LABELS } from "~/lib/analytics/quality";
+
+export interface QualityFeedbackItem {
+  conversationId: string;
+  customerPhone: string;
+  leadName: string | null;
+  rating: "up" | "down";
+  note: string | null;
+  at: string;
+}
+
+export interface QualityPageData {
+  feedback: { total: number; up: number; down: number; positivePct: number | null };
+  /** The most recent feedback entries, newest first. */
+  recent: QualityFeedbackItem[];
+  openFlags: {
+    id: string;
+    conversationId: string;
+    reason: string;
+    reasonLabel: string;
+    detail: string | null;
+    createdAt: string;
+    customerPhone: string;
+    leadName: string | null;
+  }[];
+  openFlagCount: number;
+  ai: {
+    conversationsWithAi: number;
+    classifiedTurns: number;
+    failedTurns: number;
+    avgLatencyMs: number | null;
+    emergencyDetected: number;
+    capturedContact: number;
+  } | null;
+}
+
+/** The /quality page payload: feedback aggregate + review queue + AI outcome stats. */
+export const getQualityPageDataFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<AppResult<QualityPageData>> => {
+    try {
+      const ctx = await requireAuth();
+      const businessId = ctx.business.id;
+      const [items, openFlags, openFlagCount, aiStats] = await Promise.all([
+        qq.listConversationFeedback(businessId, 50),
+        qq.listReviewFlags(businessId, { resolved: false, limit: 50 }),
+        qq.countOpenReviewFlags(businessId),
+        qq.aiOutcomeStats(businessId).catch(() => null),
+      ]);
+      return {
+        ok: true,
+        data: {
+          feedback: feedbackAggregate(items),
+          recent: items.map((i) => ({
+            conversationId: i.conversationId,
+            customerPhone: i.customerPhone,
+            leadName: i.leadName,
+            rating: i.rating,
+            note: i.note,
+            at: i.feedbackAt.toISOString(),
+          })),
+          openFlags: openFlags.map((f) => ({
+            id: f.id,
+            conversationId: f.conversationId,
+            reason: f.reason,
+            reasonLabel: REVIEW_REASON_LABELS[f.reason] ?? f.reason,
+            detail: f.detail,
+            createdAt: f.createdAt.toISOString(),
+            customerPhone: f.customerPhone,
+            leadName: f.leadName,
+          })),
+          openFlagCount,
+          ai: aiStats,
+        },
+      };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  },
+);
+
+/**
+ * Store the owner's feedback on a conversation ("How did MissedCall AI handle
+ * this?"). rating 'up' | 'down' | 'clear' (null when clearing). Negative
+ * feedback refreshes the review queue for the conversation.
+ */
+export const setConversationFeedbackFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { conversationId?: unknown; rating?: unknown; note?: unknown })
+  .handler(async ({ data }): Promise<AppResult<{ rating: "up" | "down" | null; note: string | null; at: string | null }>> => {
+    try {
+      const ctx = await requireActiveWrite("owner", "manager");
+      const businessId = ctx.business.id;
+      const conversationId = typeof data?.conversationId === "string" ? data.conversationId : "";
+      if (!conversationId) return { ok: false, status: 400, error: "Conversation id is required." };
+      const rating = data?.rating === "up" || data?.rating === "down" ? data.rating : null;
+      const note = typeof data?.note === "string" ? data.note.trim().slice(0, 1000) : null;
+      const updated = await qq.setConversationFeedback(businessId, conversationId, rating, note);
+      if (!updated) return { ok: false, status: 404, error: "Conversation not found." };
+      // P4-A: negative feedback is a review-queue flag source — recompute.
+      await recomputeConversationFlags(businessId, conversationId).catch(() => undefined);
+      return {
+        ok: true,
+        data: { rating: updated.rating, note: updated.note, at: iso(updated.feedbackAt) },
+      };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  });
+
+/** Resolve one review-queue item (records who resolved it). */
+export const resolveReviewFlagFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { flagId?: unknown })
+  .handler(async ({ data }): Promise<AppResult<{ ok: true }>> => {
+    try {
+      const ctx = await requireActiveWrite("owner", "manager");
+      const flagId = typeof data?.flagId === "string" ? data.flagId : "";
+      if (!flagId) return { ok: false, status: 400, error: "Flag id is required." };
+      const resolved = await qq.resolveReviewFlag(ctx.business.id, flagId, ctx.user?.email ?? null);
+      if (!resolved) return { ok: false, status: 404, error: "Flag not found or already resolved." };
+      return { ok: true, data: { ok: true } };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  });

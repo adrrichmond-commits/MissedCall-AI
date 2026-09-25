@@ -48,6 +48,12 @@ import { countRecentSystemErrors, listRecentSystemErrors } from "~/db/queries/sy
 import { getUsageForPeriod } from "~/db/queries/usage";
 import { currentPeriodStart } from "./usage";
 import { limitsForPlan } from "~/lib/pricing";
+// P4-A: funnel counts + prompt version history (plain reads for /admin/funnel
+// and /admin/prompts loaders).
+import { funnelStageCounts } from "~/db/queries/funnel";
+import { listPromptVersions } from "~/db/queries/prompts";
+import { funnelSteps, overallConversion } from "~/lib/analytics/funnel";
+import { PROMPT_SURFACES, PROMPT_SURFACE_LABELS, promptVersionView } from "~/lib/analytics/prompts";
 
 // ---------------------------------------------------------------------------
 // Shared result shapes (adminFns.ts re-exports these)
@@ -55,7 +61,7 @@ import { limitsForPlan } from "~/lib/pricing";
 
 export type AdminResult<T> =
   | { ok: true; data: T }
-  | { ok: false; status: 401 | 403 | 404; error: string };
+  | { ok: false; status: 400 | 401 | 403 | 404; error: string };
 
 export function adminErrorToResult(e: unknown): AdminResult<never> {
   if (e instanceof AuthError) {
@@ -449,6 +455,85 @@ export async function adminHealthPage(): Promise<AdminResult<AdminHealthView>> {
         systemErrorCount1h,
       },
     };
+  } catch (e) {
+    return adminErrorToResult(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// P4-A: signup→paid funnel + runtime prompt editor (plain reads)
+// ---------------------------------------------------------------------------
+
+/**
+ * The visitor→paid funnel view for /admin/funnel. Real counts only
+ * (businesses flagged is_demo are excluded from the primary series and
+ * reported separately) — this page shows honest infrastructure zeros until
+ * launch traffic arrives; it never invents numbers.
+ */
+export async function adminFunnelPage(): Promise<AdminResult<P4AFunnelView>> {
+  try {
+    await requirePlatformAdmin();
+    const agg = await funnelStageCounts();
+    const steps = funnelSteps(agg.real);
+    return {
+      ok: true,
+      data: {
+        steps,
+        overallConversion: overallConversion(agg.real),
+        totalBusinessesExDemo: Math.max(...steps.map((s) => s.count), 0),
+        demoCount: agg.demoCount,
+        allStages: agg.all,
+      },
+    };
+  } catch (e) {
+    return adminErrorToResult(e);
+  }
+}
+
+export interface P4AFunnelView {
+  steps: ReturnType<typeof funnelSteps>;
+  overallConversion: number | null;
+  /** Businesses at the first stage excluding demo — the funnel's true top. */
+  totalBusinessesExDemo: number;
+  demoCount: number;
+  /** Per-stage counts including demo businesses (shown as a secondary note). */
+  allStages: Record<string, number>;
+}
+
+export interface P4APromptsView {
+  surfaces: {
+    surface: "lead_capture" | "receptionist";
+    label: string;
+    activeVersion: number | null;
+    versions: {
+      id: string;
+      version: number;
+      body: string;
+      note: string | null;
+      editedBy: string | null;
+      isActive: boolean;
+      createdAt: string;
+    }[];
+  }[];
+}
+
+/** The /admin/prompts editor payload: full version history per surface. */
+export async function adminPromptsPage(): Promise<AdminResult<P4APromptsView>> {
+  try {
+    await requirePlatformAdmin();
+    const surfaces = await Promise.all(
+      PROMPT_SURFACES.map(async (surface) => {
+        const versions = (await listPromptVersions(surface)).map(promptVersionView);
+        const active = versions.find((v) => v.isActive);
+        return {
+          surface,
+          label: PROMPT_SURFACE_LABELS[surface],
+          activeVersion: active?.version ?? null,
+          versions,
+        };
+      }),
+    );
+    return { ok: true, data: { surfaces } };
   } catch (e) {
     return adminErrorToResult(e);
   }
