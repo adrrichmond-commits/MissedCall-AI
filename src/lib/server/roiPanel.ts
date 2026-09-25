@@ -13,7 +13,13 @@
  * business's plan id — no price literal lives here.
  */
 import { getBusiness } from "~/db/queries/auth";
-import { customerReplyCount, revenueFunnelCounts, revenueMetrics } from "~/db/queries/revenue";
+import {
+  customerReplyCount,
+  revenueFunnelCounts,
+  revenueMetrics,
+  wonRevenueSince,
+} from "~/db/queries/revenue";
+import { computePeriodBounds } from "~/lib/server/revenue";
 import { trialDaysRemaining } from "~/lib/trialValue";
 import { computeRoiPanel, type RoiPanelData } from "~/lib/server/roi";
 
@@ -25,10 +31,13 @@ import { computeRoiPanel, type RoiPanelData } from "~/lib/server/roi";
 export async function buildRoiPanelData(businessId: string): Promise<RoiPanelData> {
   const business = await getBusiness(businessId);
   const timezone = business?.timezone ?? "UTC";
-  const [funnel, metrics, customerReplies] = await Promise.all([
+  const [funnel, metrics, customerReplies, monthRevenueCents] = await Promise.all([
     revenueFunnelCounts(businessId),
     revenueMetrics(businessId, timezone),
     customerReplyCount(businessId),
+    // TRUE calendar-month revenue (nested) — see wonRevenueSince for why the
+    // ROI multiple must not read revenueMetrics' single-bucket "month".
+    wonRevenueSince(businessId, computePeriodBounds(new Date(), timezone).monthStart),
   ]);
   return computeRoiPanel({
     measured: {
@@ -41,7 +50,7 @@ export async function buildRoiPanelData(businessId: string): Promise<RoiPanelDat
     },
     jobsWon: metrics.allTime.wonLeads,
     revenueRecoveredCents: metrics.allTime.recoveredCents,
-    revenueRecoveredMonthCents: metrics.month.recoveredCents,
+    revenueRecoveredMonthCents: monthRevenueCents,
     planId: business?.plan ?? "",
     trialDaysRemaining:
       business?.trialEndsAt != null

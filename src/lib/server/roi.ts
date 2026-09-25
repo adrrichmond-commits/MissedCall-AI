@@ -23,7 +23,8 @@
  * ESTIMATE of recovered revenue until verified by real jobs, which is exactly
  * how the business plan scopes the KPI.
  *
- * ROI DEFINITION: estimated revenue recovered THIS MONTH ÷ monthly
+ * ROI DEFINITION: estimated revenue recovered THIS MONTH (true calendar
+ * month, nested — a win Monday still counts on the 20th) ÷ monthly
  * subscription cost. The subscription cost is NEVER hard-coded here — it is
  * resolved from src/lib/pricing.ts via the business's plan id (trial and
  * unknown plans cost $0 while they cost the owner nothing). Null ROI when the

@@ -118,6 +118,29 @@ export async function customerReplyCount(businessId: string): Promise<number> {
   return toNumber((rows[0] as unknown as Record<string, unknown>).n);
 }
 
+/**
+ * P5-2: summed pipeline_value_cents of WON leads converted at or after
+ * `since` — a TRUE calendar-month sum. Deliberately NOT revenueMetrics'
+ * bucket: there, a win inside the current week counts as "week" only
+ * (single-bucket precedence, pinned by test-revenue.ts), which would make an
+ * ROI computed off the "month" bucket understate by excluding this week's
+ * wins. The ROI multiple divides the whole calendar month by the monthly
+ * cost, so it sums nested: week wins ⊆ month wins.
+ */
+export async function wonRevenueSince(businessId: string, since: Date): Promise<number> {
+  assertServer();
+  const db = sql();
+  const rows = await db`
+    SELECT COALESCE(SUM(pipeline_value_cents), 0) AS cents
+    FROM leads
+    WHERE business_id = ${businessId}
+      AND status = 'won'
+      AND pipeline_value_cents IS NOT NULL
+      AND converted_at IS NOT NULL
+      AND converted_at >= ${since}`;
+  return toNumber((rows[0] as unknown as Record<string, unknown>).cents);
+}
+
 /** Appointment rows tied to recovered missed-call leads (business-scoped). */
 export async function appointmentsFromRecoveredLeads(businessId: string): Promise<number> {
   assertServer();
