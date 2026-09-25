@@ -50,6 +50,11 @@ import {
   notifyOwnerViaSms,
   queueOwnerNotificationEmail,
 } from "./smsWorkflowTriggers";
+// P4-A learning loop: funnel stage recording, AI-quality signals, runtime
+// prompt overlay (best-effort; none of these can fail the conversation).
+import { trackFunnel } from "./funnelTrack";
+import { recordClassificationTurn, markEmergencyEscalated } from "./qualityMonitor";
+import { applyPromptOverlay } from "./promptOverrides";
 
 /** What actually happened with the text-back for one captured lead. */
 export type TextBackOutcome =
@@ -109,6 +114,9 @@ export async function captureMissedCallLead(
 ): Promise<{ lead: Lead; textBack: TextBackResult }> {
   // 1. Capture the lead first — provider state never blocks capture.
   const lead = await q.createLead(businessId, input);
+  // P4-A funnel: the business's first AI-captured lead (SMS text-back or
+  // voice receptionist both funnel through this function). Idempotent.
+  void trackFunnel(businessId, "first_lead");
 
   // 2. In-app new_lead notification (always, matching build #3 semantics).
   //    P4-S: the owner's EMAIL and SMS channels for new_lead are gated by the
@@ -234,6 +242,9 @@ export async function handleInboundSms(args: {
     status: "unclassified",
     externalId: args.externalId,
   });
+  // P4-A funnel: the recovery loop actually ran for this business (first
+  // AI-handled inbound SMS). Idempotent; failure never affects the flow.
+  void trackFunnel(args.businessId, "first_recovered_call");
 
   // 2. Command handling (STOP persistence is the compliance gate).
   const command = parseSmsCommand(args.body);
@@ -285,7 +296,10 @@ export async function handleInboundSms(args: {
       // log honestly (metering/gating is degraded, not the conversation).
       console.log("[textback] usage gate unavailable - allowing LLM tier: " + String(gateErr));
     }
+    // P4-A: wall-clock duration of the classification turn (quality signal).
+    const turnStart = performance.now();
     const pipeline = await runInboundPipeline(args.businessId, args.body, llmAllowed ? undefined : { forceRulesTier: true });
+    const turnLatencyMs = Math.round(performance.now() - turnStart);
     try {
       const bizRow = await q.getBusiness(args.businessId);
       if (bizRow) {
@@ -304,6 +318,15 @@ export async function handleInboundSms(args: {
           ")",
       );
     }
+    // P4-A: record the AI outcome signal for this turn + refresh the review
+    // flags. tierReason "backstop" = the LLM was configured but failed this
+    // turn (the honest failure signal); "default" = no LLM configured at all
+    // (no AI failure — the rules engine IS the launch configuration).
+    void recordClassificationTurn(args.businessId, args.conversationId, {
+      classification: pipeline.classification,
+      latencyMs: turnLatencyMs,
+      llmFailed: pipeline.tierReason === "backstop",
+    });
 
     // 4. Emergency auto-escalation (fail toward emergency; never a parallel
     //    notification system — the in-app row + owner email/SMS ARE the
@@ -380,10 +403,13 @@ async function runInboundPipeline(
       : isLlmConfigured()
     ? {
         model: readLlmConfig()?.model ?? "unknown",
-        complete: (system, user, opts) =>
-          llmComplete(system, user, {
-            maxTokens: opts?.maxTokens ?? 500,
-            timeoutMs: opts?.timeoutMs ?? 15_000,
+        // P4-A: the runtime prompt overlay (admin console) is appended to
+        // whatever system prompt the pipeline passes — the KB guardrail
+        // prompt stays first and can never be weakened by the overlay.
+        complete: async (system, user, llmOpts) =>
+          llmComplete(await applyPromptOverlay(system, "lead_capture"), user, {
+            maxTokens: llmOpts?.maxTokens ?? 500,
+            timeoutMs: llmOpts?.timeoutMs ?? 15_000,
             temperature: 0,
           }),
       }
@@ -473,6 +499,9 @@ async function escalateEmergency(
       },
       { emergency: true, leadId: leadId },
     );
+    // P4-A: the escalation COMPLETED — record it so the review queue does not
+    // flag this conversation as "emergency without escalation".
+    void markEmergencyEscalated(args.businessId, args.conversationId);
     console.log(
       "[textback] EMERGENCY escalated (key " +
         (c.emergencyKey ?? "unclassified") +

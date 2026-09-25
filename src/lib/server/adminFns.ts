@@ -192,3 +192,76 @@ export const adminHealthFn = createServerFn({ method: "GET" }).handler(
 
 /** Kept for backwards compatibility with earlier imports of this helper. */
 export { stripeConfiguredBool };
+
+// ---------------------------------------------------------------------------
+// P4-A: funnel view + runtime prompt editor (platform-admin only)
+// ---------------------------------------------------------------------------
+
+import {
+  adminFunnelPage,
+  adminPromptsPage,
+  type P4AFunnelView,
+  type P4APromptsView,
+} from "./adminReads";
+import { insertPromptVersion, activatePromptVersion } from "~/db/queries/prompts";
+import { clearPromptOverrideCache } from "./promptOverrides";
+import { isPromptSurface, validatePromptBody, validatePromptNote } from "~/lib/analytics/prompts";
+
+/** The /admin/funnel loader read (browser-initiated RPC wrapper). */
+export const adminFunnelDataFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<AdminResult<P4AFunnelView>> => {
+    return adminFunnelPage();
+  },
+);
+
+/** The /admin/prompts loader read (browser-initiated RPC wrapper). */
+export const adminPromptsDataFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<AdminResult<P4APromptsView>> => {
+    return adminPromptsPage();
+  },
+);
+
+/** Save a NEW prompt overlay version (never edits history) and activate it. */
+export const savePromptVersionFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { surface?: unknown; body?: unknown; note?: unknown })
+  .handler(async ({ data }): Promise<AdminResult<{ version: number }>> => {
+    try {
+      const ctx = await requirePlatformAdmin();
+      if (!isPromptSurface(data?.surface)) {
+        return { ok: false, status: 400, error: "Unknown prompt surface." };
+      }
+      const body = validatePromptBody(data?.body);
+      if (!body) return { ok: false, status: 400, error: "Prompt text must be 1-8000 characters." };
+      const note = validatePromptNote(data?.note);
+      const row = await insertPromptVersion(data.surface, body, {
+        note,
+        editedBy: ctx.user.email,
+      });
+      clearPromptOverrideCache(data.surface);
+      return { ok: true, data: { version: row.version } };
+    } catch (e) {
+      return adminErrorToResult(e);
+    }
+  });
+
+/** Revert to a prior version by flipping the active pointer (history kept). */
+export const revertPromptVersionFn = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { surface?: unknown; version?: unknown })
+  .handler(async ({ data }): Promise<AdminResult<{ version: number }>> => {
+    try {
+      await requirePlatformAdmin();
+      if (!isPromptSurface(data?.surface)) {
+        return { ok: false, status: 400, error: "Unknown prompt surface." };
+      }
+      const version = Math.floor(Number(data?.version));
+      if (!Number.isFinite(version) || version < 1) {
+        return { ok: false, status: 400, error: "Invalid version number." };
+      }
+      const row = await activatePromptVersion(data.surface, version);
+      if (!row) return { ok: false, status: 404, error: "That version does not exist." };
+      clearPromptOverrideCache(data.surface);
+      return { ok: true, data: { version: row.version } };
+    } catch (e) {
+      return adminErrorToResult(e);
+    }
+  });

@@ -832,16 +832,22 @@ export function neonVoiceCallStore(): VoiceCallStore {
         .map((t) => (t.role === "caller" ? "Caller: " : "AI: ") + t.text)
         .join("\n");
       if (dialogue.trim().length === 0) return null;
-      const system = [
-        "You summarize a plumbing company's handled phone call for the owner.",
-        "Return 1-3 plain sentences: what the caller needed, urgency, and the callback number if stated.",
-        "Never invent details that were not said. No prices, no bookings, no promises.",
-        // P4-O: the owner's studio instructions steer what to emphasize. They
-        // extend the summary, never weaken the honesty guardrails above.
-        ...(args.instructions && args.instructions.trim()
-          ? ["The owner's standing instructions for summaries: " + args.instructions.trim()]
-          : []),
-      ].join("\n");
+      // P4-A: the runtime prompt overlay (admin console) extends the summary
+      // prompt — appended AFTER the honesty guardrails, never replacing them.
+      const { applyPromptOverlay } = await import("~/lib/server/promptOverrides");
+      const system = await applyPromptOverlay(
+        [
+          "You summarize a plumbing company's handled phone call for the owner.",
+          "Return 1-3 plain sentences: what the caller needed, urgency, and the callback number if stated.",
+          "Never invent details that were not said. No prices, no bookings, no promises.",
+          // P4-O: the owner's studio instructions steer what to emphasize. They
+          // extend the summary, never weaken the honesty guardrails above.
+          ...(args.instructions && args.instructions.trim()
+            ? ["The owner's standing instructions for summaries: " + args.instructions.trim()]
+            : []),
+        ].join("\n"),
+        "receptionist",
+      );
       const raw = await llmComplete(system, dialogue, { maxTokens: 200, timeoutMs: 15_000, temperature: 0 });
       return raw.trim().slice(0, 600) || null;
     },

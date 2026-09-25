@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { getInboxListFn, getConversationThreadFn, type InboxThreadData } from "~/lib/server/appFns";
+import { getInboxListFn, getConversationThreadFn, setConversationFeedbackFn, type InboxThreadData } from "~/lib/server/appFns";
 import { EmptyState, ErrorState, PageHeader, PageLoading, StatusBadge } from "~/components/app/pageStates";
 import { formatDateTime } from "~/lib/format";
 
@@ -198,11 +198,90 @@ function InboxPage() {
                 <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
                   Replying from here isn't available yet — the AI assistant handles customer replies. Phase 2 adds manual sending.
                 </p>
+                {/* P4-A: "How did MissedCall AI handle this?" — per-conversation
+                    owner feedback. Ratings land in the AI quality view. */}
+                <ConversationFeedback
+                  conversationId={thread.conversation.id}
+                  initialRating={thread.conversation.feedbackRating}
+                  initialNote={thread.conversation.feedbackNote}
+                />
               </div>
             </>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** P4-A feedback affordance: thumbs up/down + optional note on this thread. */
+function ConversationFeedback(props: {
+  conversationId: string;
+  initialRating: "up" | "down" | null;
+  initialNote: string | null;
+}) {
+  const [rating, setRating] = useState<"up" | "down" | null>(props.initialRating);
+  const [note, setNote] = useState(props.initialNote ?? "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function save(nextRating: "up" | "down") {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await setConversationFeedbackFn({
+        data: { conversationId: props.conversationId, rating: nextRating, note },
+      });
+      if (res.ok) {
+        setRating(res.data.rating);
+        setMsg("Thanks — recorded.");
+      } else {
+        setMsg(res.error);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+      <p className="text-xs font-semibold text-slate-700">How did MissedCall AI handle this?</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void save("up")}
+          disabled={busy}
+          className={
+            "rounded-md border px-3 py-1 text-xs font-semibold disabled:opacity-50 " +
+            (rating === "up"
+              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+              : "border-slate-300 bg-white text-slate-600 hover:bg-slate-100")
+          }
+        >
+          👍 Good
+        </button>
+        <button
+          type="button"
+          onClick={() => void save("down")}
+          disabled={busy}
+          className={
+            "rounded-md border px-3 py-1 text-xs font-semibold disabled:opacity-50 " +
+            (rating === "down"
+              ? "border-red-400 bg-red-50 text-red-700"
+              : "border-slate-300 bg-white text-slate-600 hover:bg-slate-100")
+          }
+        >
+          👎 Needs work
+        </button>
+        {msg ? <span className="text-xs text-slate-500">{msg}</span> : null}
+      </div>
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        maxLength={1000}
+        placeholder="Optional note (saved with your next rating)"
+        className="mt-2 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-xs focus:border-brand-500 focus:outline-none"
+      />
     </div>
   );
 }

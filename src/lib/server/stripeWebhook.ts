@@ -31,6 +31,7 @@
 import "@tanstack/react-start/server-only";
 import { PLANS } from "~/lib/pricing";
 import type { BusinessPlan } from "~/db/schema";
+import { trackFunnel } from "./funnelTrack";
 
 export const STRIPE_SIGNATURE_HEADER = "stripe-signature";
 
@@ -482,6 +483,9 @@ async function handleSubscriptionUpdated(
   } catch (err) {
     console.log("[stripe] billing_events append failed (activation unaffected): " + String(err));
   }
+  // P4-A funnel: a paid subscription exists (the webhook activation path).
+  // 'trialing' is NOT paid — the trial window is still free. Idempotent.
+  if (status === "active") void trackFunnel(businessId, "paid");
   return {
     handled: true,
     action: "processed",
