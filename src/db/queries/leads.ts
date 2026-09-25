@@ -88,11 +88,11 @@ function leadWhere(businessId: string, f: LeadFilters): { text: string; values: 
     const like = `%${f.search.trim()}%`;
     values.push(like);
     const n = values.length;
-    clauses.push(`(contact_name ILIKE ${n} OR contact_phone ILIKE ${n} OR service_need ILIKE ${n})`);
+    clauses.push(`(contact_name ILIKE $${n} OR contact_phone ILIKE $${n} OR service_need ILIKE $${n})`);
   }
   if (f.createdBefore) {
     values.push(f.createdBefore.toISOString());
-    clauses.push(`created_at < ${values.length}`);
+    clauses.push(`created_at < $${values.length}`);
   }
   return { text: clauses.join(" AND "), values };
 }
