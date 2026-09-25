@@ -3,6 +3,7 @@ import { Badge } from "~/components/ui/Badge";
 import { Button } from "~/components/ui/Button";
 import { Nav } from "~/components/marketing/Nav";
 import { DashboardMockup } from "~/components/marketing/DashboardMockup";
+import { RoiCalculator } from "~/components/marketing/RoiCalculator";
 import { Icon, type IconName } from "~/components/marketing/icons";
 // P4-V: pricing renders from the ONE locked config module — never literals.
 // Starter $149/mo, Pro $249/mo, 14-day free trial (owner decision).
@@ -379,6 +380,9 @@ function Footer() {
             </p>
           </div>
           <nav className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+            <a href="/contact" className="text-slate-600 hover:text-slate-900">
+              Contact
+            </a>
             <a href="/terms" className="text-slate-600 hover:text-slate-900">
               Terms of Service
             </a>
@@ -412,6 +416,7 @@ function Home() {
         <Problem />
         <Solution />
         <Features />
+        <RoiCalculator />
         <Pricing />
         <Faq />
       </main>

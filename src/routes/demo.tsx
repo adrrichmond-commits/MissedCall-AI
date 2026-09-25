@@ -89,6 +89,9 @@ const stages: Stage[] = [
       "The conversation becomes a qualified lead in your dashboard — name, service, urgency, and full transcript summary — waiting for you to confirm the job.",
     children: (
       <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm shadow-sm">
+        <div className="mb-3">
+          <Badge tone="amber" className="text-xs">Example data</Badge>
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <span
@@ -194,25 +197,61 @@ function DemoPage() {
       <section className="bg-slate-50 py-16 sm:py-20">
         <div className="mx-auto max-w-4xl px-4 text-center sm:px-6">
           <Badge tone="amber" className="text-xs">
-            Sample data — the screens below use example content
+            Demo — everything on this page is example content
           </Badge>
           <h1 className="mt-5 text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl">
             See a missed call turn into a booked job
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg text-slate-600">
-            This is a scripted walkthrough of how MissedCall AI works, using
-            example content. When you're ready, step into the real product with
-            sample data — the actual dashboard, leads, and inbox the software
-            ships with.
+            This page walks through one example, end to end — the same flow your
+            shop would use. No sign-up needed to read it.
           </p>
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Button variant="primary" size="lg" href="/login?demo=1">
-              Explore the live product with sample data
-            </Button>
-            <Button variant="secondary" size="lg" href="/signup">
-              Start free trial
-            </Button>
+        </div>
+      </section>
+
+      {/* What a visitor is looking at — the sample-data story, stated plainly */}
+      <section className="pb-4">
+        <div className="mx-auto max-w-3xl px-4 sm:px-6">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 text-left text-sm shadow-sm">
+            <p className="font-semibold text-slate-900">What you&apos;re looking at</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-slate-600">
+              <li>
+                <span className="font-medium text-slate-800">The walkthrough below</span> is a
+                scripted example with fictional people, numbers, and conversations —
+                it shows the flow, not a real account.
+              </li>
+              <li>
+                <span className="font-medium text-slate-800">
+                  &ldquo;Explore the live product with sample data&rdquo;
+                </span>{" "}
+                opens the actual software, signed into a demo workspace for a
+                fictional shop (Rapid Rooter Plumbing) that we seeded with example
+                leads, conversations, and appointments.
+              </li>
+              <li>
+                <span className="font-medium text-slate-800">Nothing there is real:</span> no real
+                customers, calls, or messages — and anything you change in the demo
+                workspace touches only that sample data.
+              </li>
+              <li>
+                <span className="font-medium text-slate-800">When you start a free trial,</span>{" "}
+                you get a fresh workspace of your own — none of this example data
+                carries over.
+              </li>
+            </ul>
           </div>
+        </div>
+      </section>
+
+      {/* Actions */}
+      <section className="pb-4">
+        <div className="mx-auto flex max-w-3xl flex-col items-center justify-center gap-3 px-4 sm:flex-row sm:px-6">
+          <Button variant="primary" size="lg" href="/login?demo=1">
+            Explore the live product with sample data
+          </Button>
+          <Button variant="secondary" size="lg" href="/signup">
+            Start free trial
+          </Button>
         </div>
       </section>
 

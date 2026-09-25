@@ -22,6 +22,8 @@ import {
 } from "~/lib/server/auth.server";
 import { hashPassword, verifyPassword } from "~/lib/server/password";
 import { trackFunnelAll } from "~/lib/server/funnelTrack";
+import { applyReferralAtSignup, ensureReferralCode } from "~/db/queries/referrals";
+import { normalizeReferralCode } from "~/lib/referralCode";
 
 // ---------------------------------------------------------------------------
 // Validation helpers (server-side, never trust client input)
@@ -101,7 +103,16 @@ export type SignupResult =
   | { ok: false; error: string };
 
 export const signupFn = createServerFn({ method: "POST" })
-  .validator((d: unknown) => d as { businessName: string; fullName: string; email: string; password: string })
+  .validator((d: unknown) =>
+    d as {
+      businessName: string;
+      fullName: string;
+      email: string;
+      password: string;
+      /** P5-7: optional — present when signup came through a referral link. */
+      referralCode?: string;
+    },
+  )
   .handler(async ({ data }): Promise<SignupResult> => {
   try {
     enforceAuthRateLimit("auth_signup");
@@ -109,6 +120,10 @@ export const signupFn = createServerFn({ method: "POST" })
     const fullName = requiredString(data?.fullName, "Name", 1, 120);
     const email = normalizeEmail(data?.email);
     const password = assertStrongPassword(data?.password);
+    // Referral codes are best-effort at the boundary: a malformed code is
+    // treated as "no referral" here; a well-formed one is resolved and
+    // attributed AFTER the account exists (applyReferral never blocks signup).
+    const referralCode = normalizeReferralCode(data?.referralCode) ?? undefined;
 
     if (await q.emailExists(email)) {
       return { ok: false, error: "An account with this email already exists." };
@@ -124,6 +139,26 @@ export const signupFn = createServerFn({ method: "POST" })
     // P4-A funnel: signup + trial start (createBusinessWithOwner stamps the
     // 14-day trial_ends_at at the same moment). Idempotent, best-effort.
     void trackFunnelAll(business.id, ["signup", "trial_start"]);
+
+    // P5-7 referral foundation: every business gets a STABLE code at signup;
+    // a signup that arrived through someone's link is attributed to them.
+    // Attribution records the FACT of the referral only — no incentives exist.
+    try {
+      await ensureReferralCode(business.id);
+      if (referralCode) {
+        const applied = await applyReferralAtSignup({
+          referredBusinessId: business.id,
+          referrerCode: referralCode,
+        });
+        if (!applied) {
+          console.warn(`[referral] code ${referralCode} did not resolve for business ${business.id} — signup proceeded without attribution`);
+        }
+      }
+    } catch (refErr) {
+      // A referral hiccup must never break a signup; the code can be
+      // assigned lazily later from the settings card.
+      console.error("[referral] non-fatal failure:", refErr);
+    }
 
     // Delivery is pending provider setup — log the link server-side only.
     const vt = await issueEmailVerificationToken(user.id);
