@@ -90,8 +90,10 @@ function InboxPage() {
       />
 
       <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-        {/* Conversation list */}
-        <div className="rounded-xl border border-slate-200 bg-white">
+        {/* Conversation list — min-w-0 lets the column shrink below nowrap
+            min-content (long unbroken names/bodies otherwise force the grid
+            track to ~850px and scroll the page sideways on phones; P5-8). */}
+        <div className="min-w-0 rounded-xl border border-slate-200 bg-white">
           <div className="border-b border-slate-100 px-4 py-3">
             <p className="text-sm font-semibold text-slate-900">Conversations ({data.total})</p>
           </div>
@@ -151,8 +153,8 @@ function InboxPage() {
           )}
         </div>
 
-        {/* Thread view */}
-        <div className="rounded-xl border border-slate-200 bg-white flex flex-col" style={{ minHeight: 480 }}>
+        {/* Thread view — same min-w-0 guard as the list column. */}
+        <div className="min-w-0 rounded-xl border border-slate-200 bg-white flex flex-col" style={{ minHeight: 480 }}>
           {threadLoading ? (
             <div className="flex flex-1 items-center justify-center p-8">
               <PageLoading label="Loading conversation…" />

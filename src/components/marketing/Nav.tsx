@@ -33,7 +33,11 @@ export function Nav() {
           </span>
         </a>
 
-        <div className="hidden items-center gap-1 md:flex">
+        {/* P5-8: desktop nav fires at lg, not md. At 768px (tablet) the full
+            link row + CTA pair overflowed the header by ~30px (audit: scrollWidth
+            783 vs 753); the hamburger menu carries links + both CTAs stacked, so
+            768–1023 uses it, 1024+ gets the desktop row. */}
+        <div className="hidden items-center gap-1 lg:flex">
           {links.map((l) => (
             <a
               key={l.href}
@@ -51,7 +55,7 @@ export function Nav() {
           </a>
         </div>
 
-        <div className="hidden items-center gap-2 md:flex">
+        <div className="hidden items-center gap-2 lg:flex">
           <Button variant="secondary" size="md" href="#how-it-works">
             See How It Works
           </Button>
@@ -62,7 +66,7 @@ export function Nav() {
 
         <button
           type="button"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-md text-slate-700 hover:bg-slate-100 md:hidden"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md text-slate-700 hover:bg-slate-100 lg:hidden"
           aria-label="Toggle menu"
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
@@ -85,7 +89,7 @@ export function Nav() {
       </nav>
 
       {open && (
-        <div className="border-t border-slate-200 bg-white px-4 py-3 md:hidden">
+        <div className="border-t border-slate-200 bg-white px-4 py-3 lg:hidden">
           <div className="flex flex-col gap-1">
             {links.map((l) => (
               <a

@@ -464,13 +464,13 @@ function DigestCard({ digest }: { digest: AnalyticsData["digest"] }) {
           />
           Send me the digest
         </label>
-        <label className="flex items-center gap-2 text-sm text-slate-700">
+        <label className="flex min-w-0 items-center gap-2 text-sm text-slate-700">
           Frequency
           <select
             value={frequency}
             onChange={(e) => setFrequency(e.target.value === "daily" ? "daily" : "weekly")}
             disabled={!enabled}
-            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus:border-brand-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+            className="min-w-0 max-w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus:border-brand-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
           >
             <option value="daily">Daily (yesterday's numbers)</option>
             <option value="weekly">Weekly (last week's numbers)</option>
