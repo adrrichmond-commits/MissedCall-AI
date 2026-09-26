@@ -94,13 +94,64 @@ const EMERGENCY_GROUPS: RuleGroup[] = [
     key: "sewage_backup",
     label: "sewer/sewage backup",
     safety: true,
-    res: [/\bsewage\b|\b(sewer|septic)( [a-z]+){0,3} (backed? ?up|backing ?up|backup|overflow(ing)?)\b/],
+    // Pass-2 tuning: the inverted order — "there's a backup in the sewer" /
+    // "water backed up from the septic tank" — previously fell through ("no
+    // domain signals"): no urgent group names a bare sewer/septic noun either.
+    // Up to 4 filler words between the backup word and the noun. "main line"
+    // is deliberately NOT in the noun set so "backup in the main line" stays
+    // with the urgent main-line rule instead of jumping to emergency.
+    // (The three orders stay as top-level alternatives of ONE regex — res
+    // entries are a conjunction, so separate regexes would AND the orders.)
+    res: [
+      /\bsewage\b|\b(sewer|septic)( [a-z]+){0,3} (backed? ?up|backing ?up|backup|overflow(ing)?)\b|\b(backup|backed? ?up|backing ?up|overflow(ing)?)( [a-z]+){0,4} (sewer|septic)\b/,
+    ],
+  },
+  {
+    key: "rising_water",
+    label: "water rising",
+    safety: true,
+    // Pass-2 tuning: "water is rising in the basement" / "rising water" —
+    // level-gain language that names no leak/overflow word at all. Filler
+    // between "water" and the rising stem is limited to short verbs so
+    // "water bill is rising" does not match. Known limitation: "water price
+    // keeps rising" with those same verbs also matches — accepted
+    // conservative risk, same tradeoff as the flood prefix rule.
+    res: [
+      /\bwater (is |was |its |it s |just |still |keeps? |kept |continues? to be )?(rising|risin|risen|coming up|creeping up|climbing)\b|\b(rising|risin|risen) water\b/,
+    ],
+  },
+  {
+    key: "sump_pump_failing",
+    label: "sump pump failing under load",
+    safety: true,
+    // Pass-2 tuning: sump pump + water-event evidence ("water is rising, sump
+    // pump cant keep up"). The sump noun alone is deliberately NOT emergency
+    // — installs, quotes and maintenance requests name sump pumps too — so
+    // evidence words must co-occur. Stems carry no trailing boundary so
+    // "flooded"/"pouring"/"gushing" inflections match.
+    res: [
+      /\bsump\b/,
+      /\b(rising|risin|risen|coming up|overflow|backed? ?up|backing ?up|backup|flood|wont stop|cant keep up|can ?not keep up|overwhelmed|gush|pour|nonstop|constant)/,
+    ],
   },
   {
     key: "gas_smell",
     label: "possible gas leak",
     safety: true,
     res: [/\bgas\b/, /\b(smell|smells|smelling|smelled|smelt|odor|odour|leak|leaking|leek|fumes?)\b/],
+  },
+  {
+    key: "appliance_smoking",
+    label: "appliance smoking/burning",
+    safety: true,
+    // Pass-2 tuning: "my garbage disposal is smoking" — fire/electrical
+    // hazard from a powered appliance is the same safety tier as gas. Needs
+    // BOTH the hazard word and an appliance noun, so a smoke-detector report
+    // or a figurative "burning question" never matches.
+    res: [
+      /\b(smoking|smoke|smokey|on fire|caught fire|catching fire|burning|burnt|burned|burning smell|smells? like (its |it s )?burning|sparking|sparked|sparks?|electrical burn)\b/,
+      /\b(disposal|disposer|garbage disposal|water heater|hot water heater|hot water tank|furnace|boiler|washing machine|washer|dryer|dishwasher|motor|pump|outlet|switch|unit)\b/,
+    ],
   },
   {
     key: "no_water",
@@ -120,6 +171,21 @@ const EMERGENCY_GROUPS: RuleGroup[] = [
     res: [/\b(toilet|toilets|sink|sinks|bathtub|tub|shower|dishwasher|drain|drains|laundry)\b/, /\boverflow(ing|ed|s)?\b/],
   },
   {
+    key: "wont_stop_filling",
+    label: "fixture/tank filling nonstop",
+    safety: true,
+    // Pass-2 tuning: "toilet wont stop filling" — the fixture/tank is
+    // actively gaining water toward the overflow point (the pre-overflow
+    // state of the overflowing-fixture emergency above). Requires a
+    // water-holding noun so "filling out the form" / "filling me in" never
+    // match. A merely "running" toilet keeps its urgent rule (running_toilet)
+    // — "filling" is the customer naming the rising-water direction.
+    res: [
+      /\b((wont|wouldnt|doesnt|doenst|cant|never) stop filling|keeps? filling|kept filling|over ?filling|(nonstop|continuously|constantly) filling)\b/,
+      /\b(toilet|toilets|tank|tanks|tub|bathtub|bowl|sink|sinks|dishwasher|washing machine|washer|boiler|pool|water)\b/,
+    ],
+  },
+  {
     key: "water_heater_heavy_leak",
     label: "water heater leaking heavily",
     safety: true,
@@ -129,6 +195,21 @@ const EMERGENCY_GROUPS: RuleGroup[] = [
       /\bwater heater\b/,
       /\b(leak|gush|pour|spray|spew|burst)/,
       /\b(heavily|heavy|non ?stop|wont stop|cant stop|cant get it to stop|everywhere|a lot of|lots of|soaking|soaked|drench|buckets?|gushing|pouring|spraying|spewing|rapidly|fast)\b/,
+    ],
+  },
+  {
+    key: "ceiling_water_active",
+    label: "active overhead/ceiling leak",
+    safety: true,
+    // Pass-2 tuning: overhead water with active-flow or structural evidence
+    // ("water dripping from my ceiling", "ceiling caving in") is the
+    // gravity + ceiling-collapse path, not a contained leak — previously the
+    // urgent-only ceiling_leak rule under-classified it. That urgent group
+    // keeps the contained cases (stain, brown spot, bubbling paint): they
+    // name no active flow, so they never hit this emergency group.
+    res: [
+      /\b(ceiling|ceilings|roof|drywall)\b/,
+      /\b(caving|cave|collaps|buckling|bulging|bulge|sagging|sag|falling|pouring|gushing|spraying|spewing|dripping|drip|leak|coming through|coming down|coming out|soaking|soaked|spreading|wont stop|nonstop|overflow)/,
     ],
   },
   {
