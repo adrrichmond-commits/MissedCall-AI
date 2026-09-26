@@ -43,6 +43,25 @@ const TOTAL_STEPS = 5;
  * The old informational "Account" step is gone as a screen (the session IS the
  * account); the trial note moved to step 5. The server-derived done-flags in
  * settingsFns are unchanged — this file maps them onto the five screens.
+ *
+ * P5-8 DATA-POINT AUDIT (signup → onboarding journey, pinned by
+ * scripts/test-p58-onboarding-ui.ts). The 12 data points the journey collects,
+ * each DB-backed and honestly reflected in the wizard:
+ *
+ *    1. Business name   (/signup → businesses.name)     7. Time zone (step 1)
+ *    2. Owner full name (/signup → users.full_name)     8. Services (step 2)
+ *    3. Work email      (/signup → users.email)         9. Service areas (step 2)
+ *    4. Password        (/signup, argon2id hash)       10. Business hours (step 3)
+ *    5. Main phone      (step 1 → businesses.phone)    11. Emergency prefs (step 3)
+ *    6. Location: street, city, state, ZIP (step 1)    12. Notification prefs (step 4)
+ *
+ * Legitimately DEFERRED points — documented here and in the UI, never counted
+ * as collected progress: website + address line 2 (Settings; step 1 passes the
+ * stored values through untouched), texting-number provisioning and the live
+ * AI test call (provider-gated: shown as honest status in step 4, hard-false
+ * in computeStepDone, excluded from the completion percent, never block
+ * finish). No collection step is missing: every one of the 12 has a real
+ * input in this flow and a real column/table behind it.
  */
 const STEP_LABELS = [
   "Your business",
