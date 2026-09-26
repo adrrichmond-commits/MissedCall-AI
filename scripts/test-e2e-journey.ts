@@ -126,9 +126,18 @@ try {
   );
   // Honest SMS gating: with Twilio unset (or a synthetic number) the text-back
   // must NOT claim success. A real send to a fake number would be a bug.
+  // Where Twilio IS configured, the opt-out refusal must be the specific
+  // opted_out outcome. In a bare-CI environment (no Twilio credentials) the
+  // provider gate refuses first with not_configured — the never-send
+  // guarantee holds either way (nothing was texted), so both are honest
+  // passes for this check; never a sent/delivered outcome.
+  const twilioConfigured = Boolean(
+    process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_NUMBER,
+  );
   checkTrue(
     "missed call: opted-out numbers are NEVER texted (opt-out is the never-send rule)",
-    captured.textBack.outcome === "opted_out",
+    captured.textBack.outcome === "opted_out" ||
+      (!twilioConfigured && captured.textBack.outcome === "not_configured"),
     captured.textBack.outcome + "/" + String(captured.textBack.reason),
   );
   const notifRows = (await query(

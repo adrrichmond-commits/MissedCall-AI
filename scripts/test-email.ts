@@ -414,11 +414,14 @@ stubFetch({ status: 200, body: { id: "email_queue_1" } });
 }
 uninstallFetch();
 
-// Deliverable types: exactly the three business-critical ones.
+// Deliverable types: the three business-critical ones + the P5-5 opt-in
+// performance digest (emailDelivery gained a performance_digest subject/body
+// in PR #43 but this pin was never widened — CI has been red since). Pin the
+// exact set: a new deliverable type must update this list deliberately.
 check(
-  "hook: deliverable types are new_lead + appointment_requested + payment_failed",
+  "hook: deliverable types are new_lead + appointment_requested + payment_failed + performance_digest",
   [...EMAIL_DELIVERY_TYPES].sort(),
-  ["appointment_requested", "new_lead", "payment_failed"],
+  ["appointment_requested", "new_lead", "payment_failed", "performance_digest"],
 );
 
 console.log("\n" + checks + " checks run, " + failures + " failed");
