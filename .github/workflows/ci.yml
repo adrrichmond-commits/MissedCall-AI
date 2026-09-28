@@ -65,7 +65,7 @@ jobs:
           # p55-reporting) run in the smoke-and-isolation job below — they need
           # DATABASE_URL, which only exists there (and "journey" pointed at a
           # file that does not exist: the suite is test-e2e-journey.ts).
-          suites="admin billing classify ai-tuning-pass2 crm email kb pipeline revenue sms sms-workflows stripe voice infra p4v p4a knock receptionist"
+          suites="admin billing classify ai-tuning-pass2 crm email kb pipeline revenue sms sms-workflows webhook-signature-url stripe voice infra p4v p4a knock receptionist"
           for t in $suites; do
             echo "::group::bun scripts/test-$t.ts"
             if bun "scripts/test-$t.ts"; then

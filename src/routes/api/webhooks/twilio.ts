@@ -19,7 +19,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { checkRateLimit, clientIpFromHeaders } from "~/lib/server/rateLimit";
 import { guardApiRoute } from "~/lib/server/errorSink";
 import { isSmsConfigured, readSmsConfig } from "~/lib/server/sms";
-import { TWILIO_SIGNATURE_HEADER, twilioSignatureIsValid } from "~/lib/server/twilioSignature";
+import { TWILIO_SIGNATURE_HEADER, candidateSignatureUrls, twilioSignatureIsValidAny } from "~/lib/server/twilioSignature";
 import { handleInboundSms } from "~/lib/server/textBack";
 import { normalizePhone, phoneKey } from "~/lib/smsCommands";
 import * as q from "~/db/queries";
@@ -67,12 +67,15 @@ async function handlePost(request: Request): Promise<Response> {
     return jsonError(400, "bad_request", "Missing From or Body in the Twilio payload.");
   }
 
-  // 3. Signature validation (HMAC-SHA1 over URL + sorted params).
+  // 3. Signature validation (HMAC-SHA1 over URL + sorted params). Behind the
+  //    platform proxy, request.url is not the public origin Twilio signed —
+  //    validate against every honest candidate (configured base, forwarded
+  //    headers, request.url); each still requires the real auth token.
   const config = readSmsConfig();
   if (!config) return jsonError(503, "twilio_not_configured", "Twilio credentials unavailable.");
   const signature = request.headers.get(TWILIO_SIGNATURE_HEADER);
-  const valid = await twilioSignatureIsValid({
-    url: request.url,
+  const valid = await twilioSignatureIsValidAny({
+    urls: candidateSignatureUrls(request),
     params,
     signature,
     authToken: config.authToken,

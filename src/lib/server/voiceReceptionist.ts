@@ -232,8 +232,12 @@ export interface HandleVoiceWebhookArgs {
   /** The FULL form-encoded param map — Twilio signs every field, so the
    *  signature is validated over this, not the filtered typed subset. */
   allParams: Record<string, string>;
-  /** Full request URL (signature base) — the route passes request.url. */
+  /** Full request URL (signature base + TwiML action base) - the route passes
+   *  the best-known PUBLIC url (publicRequestUrl), never a proxy-internal one. */
   url: string;
+  /** Every honest candidate for the URL Twilio signed (configured base,
+   *  forwarded headers, request.url). Optional: defaults to [url]. */
+  urls?: string[];
   signature: string | null;
   authToken: string | null;
   store: VoiceCallStore;
@@ -255,7 +259,7 @@ export async function handleVoiceWebhook(args: HandleVoiceWebhookArgs): Promise<
 
   // 0. Signature FIRST (handled here so tests exercise the real path).
   if (!args.authToken) return { status: 403, xml: null };
-  const sigValid = await verifySignature(args.url, args.allParams, args.signature, args.authToken);
+  const sigValid = await verifySignature(args.urls ?? [args.url], args.allParams, args.signature, args.authToken);
   if (!sigValid) return { status: 403, xml: null };
 
   // 1. Idempotency + call record: a retried POST must not double-append.
@@ -510,15 +514,16 @@ function readAfterHoursEmergency(settings: unknown): boolean {
 }
 
 async function verifySignature(
-  url: string,
+  urls: string[],
   allParams: Record<string, string>,
   signature: string | null,
   authToken: string,
 ): Promise<boolean> {
-  const { twilioSignatureIsValid } = await import("~/lib/server/twilioSignature");
+  const { twilioSignatureIsValidAny } = await import("~/lib/server/twilioSignature");
   // Twilio signs ALL POST params (sorted by key, concatenated after the URL)
-  // — validate over the exact map the body carried, same as the SMS path.
-  return twilioSignatureIsValid({ url, params: allParams, signature, authToken });
+  // - validate over the exact map the body carried, same as the SMS path,
+  // accepting a signature that matches any honest candidate origin.
+  return twilioSignatureIsValidAny({ urls, params: allParams, signature, authToken });
 }
 
 /**
