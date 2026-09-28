@@ -257,6 +257,12 @@ async function seedAppointment(businessId: string, leadId: string, createdAt: Da
 
 // --- B1: the full-funnel business -----------------------------------------
 const B1 = await seedBusiness("P55 Report Full", "starter");
+// Whether the daily "yesterday" seed counts toward weekly PREVIOUS: true when
+// yesterday falls before the current week's start (running on the first day
+// of a week, e.g. Monday). Then weekly previous = 5 seeded + 1 spillover = 6
+// and weekly current = 3; otherwise previous = 5 and current = 4. The "down"
+// trend assertion is truthful either way.
+let b1YesterdayInPrevWeek = false;
 {
   // Daily current: 3 leads (2 missed-call), 1 AI-handled conversation with a
   // customer reply, 1 appointment, 1 won job (12000¢).
@@ -270,6 +276,7 @@ const B1 = await seedBusiness("P55 Report Full", "starter");
   // in the BUSINESS's timezone via engineWindows):
   // last month: 1 won job 30000¢; last week: 2 leads; yesterday: 1 lead.
   const { windows: w1 } = await engineWindows(B1);
+  b1YesterdayInPrevWeek = w1.daily.previous.from.getTime() < w1.weekly.current.from.getTime();
   const l5 = await seedLead(B1, { source: "web_form", createdAt: new Date(w1.monthly.previous.from.getTime() + HOUR), wonAt: new Date(w1.monthly.previous.from.getTime() + 2 * HOUR), cents: 30000 });
   void l5;
   await seedLead(B1, { source: "missed_call", createdAt: new Date(w1.weekly.previous.from.getTime() + HOUR) });
@@ -295,7 +302,7 @@ checkEq("B1 daily: revenueRecoveredCents (ESTIMATE)", rep1.periods.daily.current
 checkEq("B1 daily trend: leads up vs yesterday (1)", rep1.periods.daily.trends.leadsCaptured, "up");
 checkEq("B1 monthly previous: jobsWon", rep1.periods.monthly.previous.jobsWon, 1);
 checkEq("B1 monthly previous: revenue", rep1.periods.monthly.previous.revenueRecoveredCents, 30000);
-checkEq("B1 weekly previous: leads", rep1.periods.weekly.previous.leadsCaptured, 5);
+checkEq("B1 weekly previous: leads (5 seeded + yesterday-spill on week-start days)", rep1.periods.weekly.previous.leadsCaptured, b1YesterdayInPrevWeek ? 6 : 5);
 checkEq("B1 weekly trend: leads down vs last week (2)", rep1.periods.weekly.trends.leadsCaptured, "down");
 checkEq("B1 ROI: month revenue (12000) ÷ starter cost (14900) → 0.8×", rep1.periods.monthly.roiMultiple, 0.8);
 
