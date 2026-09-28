@@ -1,0 +1,24 @@
+# Daily pinger for the opt-in performance digest sweep. Digest cadence,
+# opt-in requirements and anti-spam rules live in the app; this only triggers
+# one sweep per call, once a day at 14:00 UTC (8am Mountain).
+name: cron-performance-digest
+on:
+  schedule:
+    - cron: "0 14 * * *"
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping performance digest sweep
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "CRON_SECRET (repo Actions secret) is not set - scheduler inactive, skipping ping. Owner: add it under Settings > Secrets and variables > Actions."; exit 0; fi
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' --max-time 120 \
+            -H "x-cron-secret: $CRON_SECRET" \
+            https://www.answermissedcalls.com/api/cron/performance-digest)
+          echo "HTTP $code"; cat /tmp/resp.json; echo
+          test "$code" = "200"
