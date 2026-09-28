@@ -263,12 +263,19 @@ export async function handleInboundSms(args: {
   // compliance commands still run, and the conversation waits for the
   // plumber. Handing the thread back to the AI resumes full classification.
   let convRow: Awaited<ReturnType<typeof q.getConversation>> = null;
+  // Cold-SMS lead capture (this change): track the conversation's lead state
+  // as of THIS turn so lead creation only ever runs on a genuinely leadless
+  // thread — and never when the backfill below just linked one.
+  let conversationHadNoLead = true;
+  let linkedExistingLead = false;
   try {
     convRow = await q.getConversation(args.businessId, args.conversationId);
+    conversationHadNoLead = convRow == null || convRow.leadId == null;
     if (convRow && convRow.leadId == null) {
       const leadByPhone = await q.getLatestLeadByPhone(args.businessId, args.from);
       if (leadByPhone) {
         await q.updateConversation(args.businessId, args.conversationId, { leadId: leadByPhone.id });
+        linkedExistingLead = true;
       }
     }
   } catch (linkErr) {
@@ -369,6 +376,23 @@ export async function handleInboundSms(args: {
       latencyMs: turnLatencyMs,
       llmFailed: pipeline.tierReason === "backstop",
     });
+
+    // 4a. COLD-SMS LEAD CAPTURE (this change): until now a cold inbound SMS
+    //     (a thread nobody texted first — no text-back lead exists) was stored
+    //     and classified, and the classified data was stamped on the message
+    //     row and DROPPED — leads were only born via captureMissedCallLead
+    //     (missed-call text-back / voice receptionist). That silently lost the
+    //     primary product outcome: a customer texting "my water heater is
+    //     leaking" never became a lead. Capture one honestly when the
+    //     classification actually extracted a service need and this customer
+    //     has no lead yet on this business. Runs BEFORE the emergency branch
+    //     on purpose: a just-created lead is linked, so escalateEmergency
+    //     below re-stamps it emergency like any other linked lead.
+    //     NO SMS is sent here — the thread is already a live two-way
+    //     conversation, and reply-gating below is untouched.
+    if (conversationHadNoLead && !linkedExistingLead) {
+      await maybeCreateLeadFromColdSms(args, pipeline);
+    }
 
     // 4. Emergency auto-escalation (fail toward emergency; never a parallel
     //    notification system — the in-app row + owner email/SMS ARE the
@@ -530,6 +554,99 @@ export function readAiTone(bizSettings: unknown): AiTone | null {
       ? (bizSettings as Record<string, unknown>)
       : {};
   return readAiToneValue(blob.aiTone);
+}
+
+/**
+ * Cold-SMS lead capture: create a lead from the classification of an inbound
+ * SMS on a thread that has no lead (nobody texted this customer first).
+ *
+ * Guard rails (deliberate, honesty-first):
+ *   - ONLY a substantive classified serviceNeed creates a lead — an empty or
+ *     whitespace need (chit-chat, "ok thanks", unclassifiable text) never
+ *     invents one;
+ *   - a lead that already exists for this phone on this business is never
+ *     duplicated — the check-then-create guard covers the sequential case
+ *     (the text-back flow, a prior cold SMS, a manual entry);
+ *   - NOTHING is sent to the customer here — no text-back, no auto-reply.
+ *     The only outbound side effects are the owner-facing channels the
+ *     existing captureMissedCallLead chain already fires (in-app new_lead
+ *     row, owner email/SMS via channel controls, follow-up task).
+ *
+ * Best-effort by design: failure is logged and never fails the turn — the
+ * inbound message and its classification are already stored at this point.
+ */
+async function maybeCreateLeadFromColdSms(
+  args: { businessId: string; conversationId: string; from: string; body: string },
+  pipeline: PipelineResult,
+): Promise<void> {
+  try {
+    const c = pipeline.classification;
+    const serviceNeed = (c.serviceNeed ?? "").trim();
+    if (!serviceNeed) return; // no substantive need — no lead invented
+    // Duplicate guard: one lead per customer phone. The existing text-back
+    // journey (lead exists → reply lands on a linked thread) is caught by the
+    // conversation check upstream; this re-check also covers a lead that
+    // exists for the phone on a DIFFERENT conversation.
+    const existing = await q.getLatestLeadByPhone(args.businessId, args.from);
+    if (existing) return;
+    const lead = await q.createLead(args.businessId, {
+      // LeadSource has no "sms" value ("missed_call" | "web_form" | "referral"
+      // | "repeat_customer" | "other") — "missed_call" is the established
+      // honest value for phone-originated captures; the cold-SMS path IS the
+      // missed-call recovery loop answering an inbound customer.
+      source: "missed_call",
+      serviceNeed,
+      urgency: c.urgency ?? undefined,
+      contactName: (c.contactName ?? "").trim() || "SMS customer",
+      contactPhone: args.from,
+      contactEmail: c.contactEmail ?? null,
+      contactAddress: c.serviceAddress ?? null,
+      description: args.body, // the customer's verbatim words — the honest record
+      notes: c.notes ?? null,
+    });
+    await q.updateConversation(args.businessId, args.conversationId, { leadId: lead.id });
+    // P4-A funnel: this is a real AI-captured lead, same as the text-back and
+    // voice paths. Idempotent; failure never affects the flow.
+    void trackFunnel(args.businessId, "first_lead");
+    // The SAME new_lead notification chain captureMissedCallLead fires. The
+    // payload honestly omits the textBack fields — no text-back was attempted
+    // for a cold inbound message (the customer is already texting us).
+    try {
+      const businessRow = await q.getBusiness(args.businessId).catch(() => null);
+      const bizSettings = (businessRow as unknown as { settings?: Record<string, unknown> } | null)?.settings ?? {};
+      const payload = {
+        leadId: lead.id,
+        leadName: lead.contactName,
+        serviceNeed: lead.serviceNeed,
+        priority: lead.priority,
+      };
+      const notification = await q.createNotification(args.businessId, {
+        type: "new_lead",
+        payload,
+      });
+      queueOwnerNotificationEmail({
+        businessId: args.businessId,
+        businessSettings: bizSettings,
+        notificationId: notification.id,
+        type: "new_lead",
+        payload,
+      });
+      void notifyOwnerViaSms(args.businessId, "new_lead", {
+        customerName: lead.contactName ?? "a customer",
+        serviceNeed: lead.serviceNeed ?? "service request",
+      }, { leadId: lead.id });
+    } catch {
+      // Notification failure must not fail the capture (same as captureMissedCallLead).
+    }
+    // The capture follow-up task ('lead_new', due next business day), same as
+    // captureMissedCallLead step 4. Best-effort.
+    await maybeCreateFollowUpTaskForNewLead(args.businessId, lead);
+    console.log(
+      "[textback] cold-SMS lead captured (lead " + lead.id + " on conversation " + args.conversationId + ")",
+    );
+  } catch (err) {
+    console.log("[textback] cold-SMS lead capture failed (message + classification stored): " + String(err));
+  }
 }
 
 /**
