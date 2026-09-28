@@ -1,0 +1,23 @@
+# External scheduler for the SMS workflow sweep (the app has no scheduler of
+# its own by design). The sweep dedupes internally and is safe to ping on this
+# cadence; the endpoint 401s without the right secret (CRON_SECRET).
+name: cron-sms-workflows
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping SMS workflow sweep
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' --max-time 120 \
+            -H "x-cron-secret: $CRON_SECRET" \
+            https://www.answermissedcalls.com/api/cron/sms-workflows)
+          echo "HTTP $code"; cat /tmp/resp.json; echo
+          test "$code" = "200"
