@@ -18,7 +18,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { checkRateLimit, clientIpFromHeaders } from "~/lib/server/rateLimit";
 import { captureSystemError } from "~/lib/server/errorSink";
 import { readSmsConfig } from "~/lib/server/sms";
-import { TWILIO_SIGNATURE_HEADER } from "~/lib/server/twilioSignature";
+import { TWILIO_SIGNATURE_HEADER, candidateSignatureUrls, publicRequestUrl } from "~/lib/server/twilioSignature";
 import { handleVoiceWebhook, neonVoiceCallStore, parseVoiceParams } from "~/lib/server/voiceReceptionist";
 
 const VOICE_STORE = neonVoiceCallStore();
@@ -58,7 +58,12 @@ async function handlePost(request: Request): Promise<Response> {
   const result = await handleVoiceWebhook({
     params: typed,
     allParams: all,
-    url: request.url,
+    // publicRequestUrl: the best-known PUBLIC url (configured base > forwarded
+    // headers > request.url) - used for signature AND every TwiML action/callback
+    // url, which Twilio's servers must be able to POST back to. candidate urls
+    // let the signature match whichever honest origin Twilio signed.
+    url: publicRequestUrl(request),
+    urls: candidateSignatureUrls(request),
     signature: request.headers.get(TWILIO_SIGNATURE_HEADER),
     authToken: config.authToken,
     store: VOICE_STORE,
