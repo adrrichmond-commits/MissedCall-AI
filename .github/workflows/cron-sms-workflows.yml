@@ -22,3 +22,10 @@ jobs:
             https://www.answermissedcalls.com/api/cron/sms-workflows)
           echo "HTTP $code"; cat /tmp/resp.json; echo
           test "$code" = "200"
+      # Keep-warm: the public site idles to sleep between visitors; this extra
+      # ping on the same */15 schedule wakes it so fewer visitors hit a cold
+      # start. Non-fatal by design; the endpoint needs no secret.
+      - name: Keep-warm public site (non-fatal)
+        if: always()
+        run: |
+          curl -sS -o /dev/null --max-time 30 https://www.answermissedcalls.com/api/healthz || true
