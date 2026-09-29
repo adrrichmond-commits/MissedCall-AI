@@ -385,6 +385,45 @@ function describeSubscriptionSync(sub: StripeSubscription): string {
   return `status=${sub.status} plan=${plan ?? "unmapped"} priceIds=[${priceIds.join(",")}] periodEnd=${periodEnd}`;
 }
 
+/**
+ * The businessId stamped onto the subscription object itself, or null.
+ * buildSubscriptionCheckoutParams sends subscription_data.metadata.businessId
+ * at checkout-build time, so every subscription event created from our
+ * checkout carries it (verified against the live account 2026-09-29: the
+ * real-card test subscription's metadata.businessId survived end-to-end).
+ */
+function subscriptionMetadataBusinessId(sub: StripeSubscription): string | null {
+  const value = sub.metadata?.businessId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Resolve the business for a subscription-shaped event WITHOUT assuming
+ * Stripe's event ordering (Stripe does not guarantee checkout.session.completed
+ * arrives before the subscription events it causes — a webhook outage on the
+ * checkout delivery leaves subscription events with no id links at all).
+ * Resolution order (first hit wins):
+ *   1. subscription metadata.businessId   — set by our own checkout params,
+ *      arrives on the object itself, independent of any prior event.
+ *   2. subscription-id link               — the classic path (checkout ran first).
+ *   3. customer-id link                   — the classic fallback.
+ * Normal in-order deliveries resolve exactly as before (steps 2–3; metadata
+ * agrees with them — it names the same business). Out-of-order or orphaned
+ * subscription events, previously "ignored — plan unchanged", now resolve.
+ */
+async function resolveBusinessForSubscription(
+  sub: StripeSubscription,
+  store: StripeEventStore,
+): Promise<{ businessId: string | null; via: string | null }> {
+  const metadataId = subscriptionMetadataBusinessId(sub);
+  if (metadataId) return { businessId: metadataId, via: "subscription metadata.businessId" };
+  const bySubscription = await store.findBusinessIdByStripeSubscription(sub.id);
+  if (bySubscription) return { businessId: bySubscription, via: "subscription id lookup" };
+  const byCustomer = await store.findBusinessIdByStripeCustomer(idOf(sub.customer) ?? "");
+  if (byCustomer) return { businessId: byCustomer, via: "customer id lookup" };
+  return { businessId: null, via: null };
+}
+
 // ---------------------------------------------------------------------------
 // Handlers — one per event type the app acts on; every write is idempotent
 // (values-only state sync) and every event is claimed by id before dispatch.
@@ -429,29 +468,31 @@ async function handleCheckoutCompleted(
 }
 
 /**
- * customer.subscription.updated / .created — the activation path. When the
- * subscription is active/trialing the plan is set from its price (env-mapped
- * or exact-amount match) and current_period_end is recorded; an active
- * subscription clears the expired-trial lockout (requireActiveWrite honors
- * subscription_status='active' as an alternative to the trial window).
- * canceled/unpaid sync honestly: unpaid→past_due, canceled→plan 'trial'.
+ * customer.subscription.updated / .created — the activation path. The business
+ * is resolved without assuming event ordering: subscription metadata.businessId
+ * first, then the subscription/customer-id links checkout writes (see
+ * resolveBusinessForSubscription). When the subscription is active/trialing
+ * the plan is set from its price (env-mapped or exact-amount match) and
+ * current_period_end is recorded; an active subscription clears the
+ * expired-trial lockout (requireActiveWrite honors subscription_status='active'
+ * as an alternative to the trial window). canceled/unpaid sync honestly:
+ * unpaid→past_due, canceled→plan 'trial'.
  */
 async function handleSubscriptionUpdated(
   event: ParsedStripeEvent<StripeSubscription>,
   store: StripeEventStore,
 ): Promise<EventOutcome> {
   const sub = event.object;
-  const businessId =
-    (await store.findBusinessIdByStripeSubscription(sub.id)) ??
-    (await store.findBusinessIdByStripeCustomer(idOf(sub.customer) ?? ""));
-  if (!businessId) {
+  const resolved = await resolveBusinessForSubscription(sub, store);
+  if (!resolved.businessId) {
     return {
       handled: true,
       action: "ignored",
       detail:
-        "customer.subscription.updated could not resolve a business by subscription id or customer id — nothing linked, plan unchanged.",
+        "customer.subscription.updated could not resolve a business (no subscription metadata.businessId, no subscription-id or customer-id match) — nothing linked, plan unchanged.",
     };
   }
+  const businessId: string = resolved.businessId;
   const status = mapSubscriptionStatus(sub.status);
   if (!status) {
     return {
@@ -478,7 +519,7 @@ async function handleSubscriptionUpdated(
       businessId,
       type: "checkout_completed",
       description: describeSubscriptionSync(sub),
-      payload: { subscriptionId: sub.id, status: sub.status, plan: plan ?? null },
+      payload: { subscriptionId: sub.id, status: sub.status, plan: plan ?? null, resolvedVia: resolved.via },
     });
   } catch (err) {
     console.log("[stripe] billing_events append failed (activation unaffected): " + String(err));
@@ -489,7 +530,7 @@ async function handleSubscriptionUpdated(
   return {
     handled: true,
     action: "processed",
-    detail: describeSubscriptionSync(sub),
+    detail: describeSubscriptionSync(sub) + " (resolved via " + (resolved.via ?? "unknown") + ")",
   };
 }
 
@@ -499,17 +540,18 @@ async function handleSubscriptionDeleted(
   store: StripeEventStore,
 ): Promise<EventOutcome> {
   const sub = event.object;
-  const businessId =
-    (await store.findBusinessIdByStripeSubscription(sub.id)) ??
-    (await store.findBusinessIdByStripeCustomer(idOf(sub.customer) ?? ""));
-  if (!businessId) {
+  // Same ordering-robust resolution as the activation path: an out-of-order
+  // cancellation must find its business even with no prior id links.
+  const resolved = await resolveBusinessForSubscription(sub, store);
+  if (!resolved.businessId) {
     return {
       handled: true,
       action: "ignored",
       detail:
-        "customer.subscription.deleted could not resolve a business — nothing changed.",
+        "customer.subscription.deleted could not resolve a business (no subscription metadata.businessId, no subscription-id or customer-id match) — nothing changed.",
     };
   }
+  const businessId: string = resolved.businessId;
   await store.setSubscriptionState({
     businessId,
     status: "canceled",
