@@ -7,7 +7,9 @@
  * event parsing, event-id dedupe, subscription-status mapping, plan mapping
  * (env price IDs + exact-amount fallback from the locked pricing module),
  * every webhook event handler against an in-memory store, handler-failure
- * retry semantics, and the 503-when-unconfigured honesty gate.
+ * retry semantics, the 503-when-unconfigured honesty gate, and OUT-OF-ORDER
+ * event delivery (a subscription event arriving before any checkout link —
+ * resolved via subscription metadata.businessId, the 2026-09-28 live fix).
  *
  * Local Postgres is not available in this environment, so handlers are
  * exercised through the StripeEventStore seam (src/lib/server/stripeWebhook.ts)
@@ -182,6 +184,8 @@ function makeStore(): { state: MemState; store: StripeEventStore } {
     businesses: new Map([
       ["biz-1", { id: "biz-1", name: "Rapid Rooter", email: "owner@rapidrooter.test", plan: "trial", subscriptionStatus: null, stripeCustomerId: null, stripeSubscriptionId: null, currentPeriodEndSeconds: null }],
       ["biz-2", { id: "biz-2", name: "Pro Plumbers", email: "owner@proplumbers.test", plan: "trial", subscriptionStatus: null, stripeCustomerId: null, stripeSubscriptionId: null, currentPeriodEndSeconds: null }],
+      // biz-3: the out-of-order delivery target — never linked by any checkout.
+      ["biz-3", { id: "biz-3", name: "Out of Order Plumbing", email: "owner@ooo.test", plan: "trial", subscriptionStatus: null, stripeCustomerId: null, stripeSubscriptionId: null, currentPeriodEndSeconds: null }],
     ]),
     notifications: [],
     claimed: new Set<string>(),
@@ -417,6 +421,115 @@ void subEvent;
     store,
   );
   check("subscription.updated: unresolvable → ignored", outcome.action, "ignored");
+}
+
+// --- Out-of-order delivery (the 9/28 live incident, backlog c1b52d5a) -------------
+// Stripe does not guarantee checkout.session.completed is processed before the
+// subscription events it causes (a webhook outage on the checkout delivery
+// leaves the subscription events with no id links at all). The subscription
+// object itself carries metadata.businessId (subscription_data.metadata, set by
+// buildSubscriptionCheckoutParams; verified live 2026-09-29), so the event must
+// resolve and activate with NO prior checkout link.
+{
+  // subscription.created arrives first — no checkout event ever processed.
+  const { state, store } = makeStore();
+  const outcome = await handleStripeEvent(
+    {
+      id: "evt_ooo_1", type: "customer.subscription.created",
+      object: {
+        id: "sub_ooo", status: "trialing", customer: "cus_ooo",
+        current_period_end: 1_900_000_000,
+        metadata: { businessId: "biz-3" },
+        items: { data: [{ price: { id: "price_OOO", unit_amount: 24900 } }] },
+      },
+    },
+    store,
+  );
+  check("out-of-order: created processed with NO prior checkout link", outcome.action, "processed");
+  check("out-of-order: plan → pro (amount-mapped)", state.businesses.get("biz-3")!.plan, "pro");
+  check("out-of-order: status trialing", state.businesses.get("biz-3")!.subscriptionStatus, "trialing");
+  check("out-of-order: period end stored", state.businesses.get("biz-3")!.currentPeriodEndSeconds, 1_900_000_000);
+  check("out-of-order: subscription id backfilled by the event itself", state.businesses.get("biz-3")!.stripeSubscriptionId, "sub_ooo");
+}
+{
+  // ...and the active activation flip via subscription.updated, still with no
+  // id links; the honest detail names the resolution path.
+  const { state, store } = makeStore();
+  const outcome = await handleStripeEvent(
+    {
+      id: "evt_ooo_2", type: "customer.subscription.updated",
+      object: {
+        id: "sub_ooo", status: "active", customer: "cus_ooo",
+        current_period_end: 1_900_000_000,
+        metadata: { businessId: "biz-3" },
+        items: { data: [{ price: { id: "price_OOO", unit_amount: 14900 } }] },
+      },
+    },
+    store,
+  );
+  check("out-of-order: updated (active) processed", outcome.action, "processed");
+  check("out-of-order: plan → starter", state.businesses.get("biz-3")!.plan, "starter");
+  check("out-of-order: status active (clears trial lockout)", state.businesses.get("biz-3")!.subscriptionStatus, "active");
+  check(
+    "out-of-order: detail names the metadata resolution path",
+    outcome.action === "processed" && outcome.detail.includes("resolved via subscription metadata.businessId"),
+    true,
+  );
+}
+{
+  // Precedence: metadata.businessId wins over a (stale) customer-id link.
+  const { state, store } = makeStore();
+  await store.linkStripeIdentity({ businessId: "biz-1", customerId: "cus_shared", subscriptionId: null });
+  const outcome = await handleStripeEvent(
+    {
+      id: "evt_ooo_3", type: "customer.subscription.updated",
+      object: {
+        id: "sub_other", status: "active", customer: "cus_shared",
+        current_period_end: null,
+        metadata: { businessId: "biz-2" },
+        items: { data: [{ price: { id: "price_X", unit_amount: 14900 } }] },
+      },
+    },
+    store,
+  );
+  check("out-of-order: processed when metadata and customer link disagree", outcome.action, "processed");
+  check("out-of-order: metadata business wins (biz-2 activated)", state.businesses.get("biz-2")!.plan, "starter");
+  check("out-of-order: stale-linked business untouched (biz-1 still trial)", state.businesses.get("biz-1")!.plan, "trial");
+}
+{
+  // Out-of-order cancellation: deleted resolves via metadata too.
+  const { state, store } = makeStore();
+  await handleStripeEvent(
+    {
+      id: "evt_ooo_4", type: "customer.subscription.created",
+      object: { id: "sub_bye", status: "trialing", customer: "cus_bye", current_period_end: null, metadata: { businessId: "biz-3" }, items: { data: [{ price: { id: "p", unit_amount: 24900 } }] } },
+    },
+    store,
+  );
+  const outcome = await handleStripeEvent(
+    {
+      id: "evt_ooo_5", type: "customer.subscription.deleted",
+      object: { id: "sub_bye", status: "canceled", customer: "cus_bye", current_period_end: null, metadata: { businessId: "biz-3" } },
+    },
+    store,
+  );
+  check("out-of-order: deleted processed via metadata", outcome.action, "processed");
+  check("out-of-order: deleted → plan honestly back to trial", state.businesses.get("biz-3")!.plan, "trial");
+  check("out-of-order: deleted → status canceled", state.businesses.get("biz-3")!.subscriptionStatus, "canceled");
+  check("out-of-order: deleted → customer never linked (checkout's job)", state.businesses.get("biz-3")!.stripeCustomerId, null);
+}
+{
+  // No metadata AND no links → still honestly ignored (behavior unchanged).
+  const { state, store } = makeStore();
+  const outcome = await handleStripeEvent(
+    {
+      id: "evt_ooo_6", type: "customer.subscription.updated",
+      object: { id: "sub_none", status: "active", customer: "cus_none", current_period_end: null, metadata: null, items: { data: [{ price: { id: "p", unit_amount: 14900 } }] } },
+    },
+    store,
+  );
+  check("out-of-order: no metadata + no links → still ignored (unchanged)", outcome.action, "ignored");
+  check("out-of-order: ignored left every business untouched", state.businesses.get("biz-1")!.plan, "trial");
 }
 
 // --- invoice.payment_failed -------------------------------------------------------
