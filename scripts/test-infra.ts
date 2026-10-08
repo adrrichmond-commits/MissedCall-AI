@@ -327,6 +327,139 @@ checkTrue("readiness: critical tables include system_errors (migration 016)", CR
   else process.env.TWILIO_AUTH_TOKEN = tokenBackup;
 }
 
+// ---------------------------------------------------------------------------
+// line self-test (first-run probe): pure logic + signature round-trip
+// ---------------------------------------------------------------------------
+// The probe runs a signed SYNTHETIC Twilio inbound SMS through the REAL
+// webhook and verifies the pipeline answered. These checks pin the honest
+// contract: the SYSTEM TEST body convention (worded to classify as a routine
+// service question — never an emergency, never chit-chat), the param/signature
+// pairing with the webhook's own validator, and the PASS/PARTIAL/FAIL leg
+// evaluation incl. the deduped-repeat-run case. No DB, no network.
+import {
+  LINE_TEST_LEG_KEYS,
+  SYSTEM_TEST_BODY_PREFIX,
+  buildLineTestBody,
+  buildProbeMessageSid,
+  buildProbeParams,
+  describeStoredLineTest,
+  evaluateLineTest,
+  webhookUrlForBase,
+  type LineTestObservations,
+} from "../src/lib/lineTest.ts";
+import {
+  computeTwilioSignature,
+  twilioSignatureIsValidAny,
+} from "../src/lib/server/twilioSignature.ts";
+{
+  const body = buildLineTestBody("abc123");
+  checkTrue("linetest: body starts with the SYSTEM TEST convention", body.startsWith(SYSTEM_TEST_BODY_PREFIX));
+  checkTrue(
+    "linetest: body carries the run nonce",
+    body.includes("(run abc123)"),
+  );
+  // The wording was verified against the real rules classifier (llm:null):
+  // urgency same_day, priority high, serviceNeed "clogged drain/fixture",
+  // replySource kb_faq_pricing, confidence 0.75 — substantive enough to
+  // capture a lead, non-emergency so the thread is never flagged for takeover
+  // (which would suppress the AI-reply leg), and deterministically answered by
+  // the KB pricing FAQ on any tier. Pin the load-bearing phrases:
+  checkTrue(
+    "linetest: body asks a pricing-FAQ-shaped question about a clogged sink",
+    body.includes("how much does it cost") && body.includes("clogged kitchen sink"),
+  );
+
+  const sid = buildProbeMessageSid("0123456789abcdef0123456789abcdef");
+  checkTrue("linetest: message sid is Twilio-shaped and unique-marker long", sid === "SM0123456789abcdef0123456789abcdef" && sid.length === 34);
+  const params = buildProbeParams({ messageSid: sid, from: "+15550001111", to: "+15552223333", body });
+  eq("linetest: probe params carry exactly the Twilio inbound contract", Object.keys(params).sort(), ["Body", "From", "MessageSid", "To"]);
+  eq("linetest: probe From/To/Body round-trip", [params.From, params.To, params.Body === body], ["+15550001111", "+15552223333", true]);
+
+  eq("linetest: webhook url joins the documented path", webhookUrlForBase("https://app.example.com"), "https://app.example.com/api/webhooks/twilio");
+  eq("linetest: webhook url tolerates a trailing slash on the base", webhookUrlForBase("https://app.example.com/"), "https://app.example.com/api/webhooks/twilio");
+
+  // Sign → validate round-trip against the webhook's OWN validator: the probe
+  // signature must be indistinguishable from genuine Twilio traffic.
+  const url = webhookUrlForBase("https://app.example.com");
+  const authToken = "test-auth-token-not-real";
+  const signature = await computeTwilioSignature({ url, params, authToken });
+  checkTrue("linetest: signed probe validates via the webhook validator", await twilioSignatureIsValidAny({ urls: [url], params, signature, authToken }));
+  checkTrue(
+    "linetest: tampered body fails the webhook validator",
+    !(await twilioSignatureIsValidAny({ urls: [url], params: { ...params, Body: body + " tampered" }, signature, authToken })),
+  );
+  checkTrue(
+    "linetest: signature bound to the signed URL (wrong URL fails)",
+    !(await twilioSignatureIsValidAny({ urls: ["https://evil.example.com/api/webhooks/twilio"], params, signature, authToken })),
+  );
+
+  // Leg evaluation — the honest outcomes matrix.
+  const base: LineTestObservations = {
+    webhookHttpStatus: 200,
+    webhookBodySnippet: '{"ok":true,"command":null,"status":"delivered"}',
+    inboundMessageId: "msg-1",
+    conversationId: "conv-1",
+    conversationHandoff: "ai",
+    aiReplyMessageId: "out-1",
+    leadThisRun: { id: "lead-1", createdAt: new Date().toISOString() },
+    priorLead: null,
+    notificationThisRun: { id: "notif-1", type: "new_lead" },
+    priorNotification: null,
+  };
+  const fresh = evaluateLineTest(base);
+  eq("linetest: fresh run — all legs observed → pass", fresh.status, "pass");
+  checkTrue("linetest: fresh run — no broken leg", fresh.firstBroken === undefined);
+
+  const deduped = evaluateLineTest({
+    ...base,
+    leadThisRun: null,
+    priorLead: { id: "lead-0", createdAt: "2026-09-28T22:21:00.000Z", description: "SYSTEM TEST (run earlier): …", linkedToThread: true },
+    notificationThisRun: null,
+    priorNotification: { id: "notif-0", type: "new_lead", createdAt: "2026-09-28T22:21:01.000Z" },
+  });
+  eq("linetest: repeat run — deduped lead + prior alert still → pass", deduped.status, "pass");
+  eq("linetest: repeat run — lead leg labeled deduped", deduped.legs.lead.state, "deduped");
+  eq("linetest: repeat run — alert leg labeled deduped", deduped.legs.ownerAlert.state, "deduped");
+  eq("linetest: repeat run — AI reply leg stays observed (never deduped)", deduped.legs.aiReply.state, "observed");
+
+  const http403 = evaluateLineTest({ ...base, webhookHttpStatus: 403, webhookBodySnippet: '{"error":"invalid_signature"}', inboundMessageId: null, aiReplyMessageId: null, leadThisRun: null, notificationThisRun: null, priorLead: null, priorNotification: null });
+  eq("linetest: webhook 403 → fail at inbound with evidence", [http403.status, http403.firstBroken, http403.legs.inbound.detail.includes("403") && http403.legs.inbound.detail.includes("invalid_signature")], ["fail", "inbound", true]);
+
+  const suppressed = evaluateLineTest({ ...base, aiReplyMessageId: null, conversationHandoff: "needed", leadThisRun: null, notificationThisRun: null, priorLead: null, priorNotification: null });
+  eq("linetest: takeover-suppressed reply → fail at aiReply", [suppressed.status, suppressed.firstBroken], ["fail", "aiReply"]);
+  checkTrue("linetest: suppressed reply detail names the takeover state and the fix", suppressed.legs.aiReply.detail.includes("handoff=needed") && suppressed.legs.aiReply.detail.includes("release the takeover"));
+
+  const noLeadAtAll = evaluateLineTest({ ...base, leadThisRun: null, priorLead: null, notificationThisRun: null, priorNotification: null });
+  eq("linetest: no lead captured and none exists → partial, broken leg = lead", [noLeadAtAll.status, noLeadAtAll.firstBroken], ["partial", "lead"]);
+
+  const unlinked = evaluateLineTest({ ...base, leadThisRun: null, priorLead: { id: "lead-0", createdAt: "2026-09-01T00:00:00.000Z", description: "real customer text", linkedToThread: false }, notificationThisRun: null, priorNotification: null });
+  eq("linetest: prior lead NOT linked to the thread is not proof → partial, broken leg = lead", [unlinked.status, unlinked.firstBroken, unlinked.legs.lead.state], ["partial", "lead", "missing"]);
+
+  const noAlert = evaluateLineTest({ ...base, notificationThisRun: null, priorNotification: null });
+  eq("linetest: pipeline ran but owner alert missing → partial (named leg)", [noAlert.status, noAlert.firstBroken], ["partial", "ownerAlert"]);
+
+  // Stored-result normalizer: garbage never renders, states never invent green.
+  checkTrue("linetest: normalizer rejects garbage", describeStoredLineTest("nonsense") === null && describeStoredLineTest({ status: "excellent" }) === null && describeStoredLineTest(null) === null);
+  const stored = describeStoredLineTest({
+    status: "pass",
+    startedAt: "2026-09-29T10:00:00.000Z",
+    finishedAt: "2026-09-29T10:01:12.000Z",
+    trigger: "auto_first_run",
+    probeFrom: "+15550001111",
+    probeTo: "+15552223333",
+    legs: {
+      inbound: { ok: true, state: "observed", detail: "x".repeat(500), evidenceId: "msg-1" },
+      aiReply: { ok: true, state: "observed", detail: "replied", evidenceId: "out-1" },
+      lead: { ok: true, state: "deduped", detail: "dedup held", evidenceId: "lead-0" },
+      ownerAlert: { ok: true, state: "deduped", detail: "prior alert", evidenceId: "notif-0" },
+    },
+  });
+  checkTrue("linetest: normalizer parses a valid stored result", stored != null && stored.status === "pass" && stored.trigger === "auto_first_run");
+  checkTrue("linetest: normalizer truncates over-long detail", stored != null && (stored.legs?.inbound?.detail.length ?? 0) <= 300);
+  eq("linetest: normalizer preserves deduped leg states", stored?.legs?.lead?.state, "deduped");
+  checkTrue("linetest: normalizer drops unparseable timestamps", describeStoredLineTest({ status: "pass", startedAt: "not-a-date" })?.startedAt !== "not-a-date");
+  eq("linetest: leg key order is pipeline order", [...LINE_TEST_LEG_KEYS], ["inbound", "aiReply", "lead", "ownerAlert"]);
+}
 console.log("\n" + checks + " checks run, " + failures + " failed");
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " TEST(S) FAILED");
 process.exit(failures === 0 ? 0 : 1);
