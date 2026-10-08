@@ -98,6 +98,9 @@ function AccountsPage() {
           <Link to="/admin/metrics" search={{}} activeProps={{ className: "font-semibold text-brand-700" }}>
             Metrics
           </Link>
+          <Link to="/admin/sales" search={{}} activeProps={{ className: "font-semibold text-brand-700" }}>
+            Sales
+          </Link>
           <Link to="/admin/funnel" search={{}} activeProps={{ className: "font-semibold text-brand-700" }}>
             Funnel
           </Link>
