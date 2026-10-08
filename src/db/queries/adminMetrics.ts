@@ -38,9 +38,37 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/** The plan filter as a SQL param: null = all plans (whitelisted upstream). */
+/**
+ * The plan filter as a SQL param: null = all plans (whitelisted upstream).
+ */
 function planParam(filters: AdminMetricsFilters): string | null {
   return filters.plan === "all" ? null : filters.plan;
+}
+
+/**
+ * P4-A funnel events (first-occurrence rows), demo excluded — the trial→paid
+ * conversion basis. SHARED: consumed by adminMetricsRaw (the /admin/metrics
+ * view) and by the weekly ops digest SQL so the two surfaces can never drift
+ * on what counts as a trial start or a conversion.
+ */
+export async function funnelTrialPaidCounts(): Promise<{ trialStarts: number; paidAccounts: number }> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `SELECT fe.stage::text AS stage, count(*)::int AS n
+     FROM funnel_events fe
+     JOIN businesses b ON b.id = fe.business_id
+     WHERE b.is_demo = false AND fe.stage IN ('trial_start', 'paid')
+     GROUP BY 1`,
+    [],
+  );
+  let trialStarts = 0;
+  let paidAccounts = 0;
+  for (const r of rows as Row[]) {
+    if (r.stage === "trial_start") trialStarts = num(r.n);
+    else if (r.stage === "paid") paidAccounts = num(r.n);
+  }
+  return { trialStarts, paidAccounts };
 }
 
 /**
@@ -86,15 +114,9 @@ export async function adminMetricsRaw(
            AND ($2::text IS NULL OR b.plan::text = $2::text)`,
         [windowDays === null ? null : new Date(now.getTime() - windowDays * 24 * 60 * 60_000), plan],
       ),
-      // 4. P4-A funnel events (first-occurrence rows), demo excluded.
-      db.query(
-        `SELECT fe.stage::text AS stage, count(*)::int AS n
-         FROM funnel_events fe
-         JOIN businesses b ON b.id = fe.business_id
-         WHERE b.is_demo = false AND fe.stage IN ('trial_start', 'paid')
-         GROUP BY 1`,
-        [],
-      ),
+      // 4. P4-A funnel events (first-occurrence rows), demo excluded —
+      //    the SHARED read (also used by the weekly ops digest).
+      funnelTrialPaidCounts(),
       // 5. Active trials: plan='trial' with the window not lapsed (or unset).
       db.query(
         `SELECT count(*)::int AS n
@@ -160,8 +182,8 @@ export async function adminMetricsRaw(
       at: isoOrNull(r.at) ?? new Date(0).toISOString(),
     }));
 
-  const trialStarts = num((funnelRows as Row[]).find((r) => r.stage === "trial_start")?.n);
-  const paid = num((funnelRows as Row[]).find((r) => r.stage === "paid")?.n);
+  const trialStarts = Math.max(0, Math.floor(funnelRows.trialStarts));
+  const paid = Math.max(0, Math.floor(funnelRows.paidAccounts));
 
   const planStatusCounts: AdminPlanStatusCount[] = (statusRows as Row[]).map((r) => ({
     plan: String(r.plan),

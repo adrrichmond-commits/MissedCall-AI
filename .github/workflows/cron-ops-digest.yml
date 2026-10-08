@@ -1,0 +1,33 @@
+# External scheduler for the WEEKLY OPS DIGEST (the app has no scheduler of
+# its own by design). Delivers the honest weekly state of the business
+# (trials, leads, appointments, attention items, phone-line rollup) to the
+# platform owner's in-app feed + inbox via /api/cron/ops-digest, which
+# follows the SAME CRON_SECRET gate pattern as the performance-digest and
+# sms-workflows crons (x-cron-secret header; 401 without the right secret).
+#
+# SCHEDULE: 06:17 UTC every Monday — chosen as "Monday morning UTC" so the
+# digest covers the previous 7 rolling days and lands at the very start of
+# the owner's Monday (00:17 US Mountain, the owner's timezone). The odd
+# minute avoids top-of-hour scheduler congestion. Idempotent: the endpoint
+# digests each period key at most once no matter how often it is pinged.
+name: cron-ops-digest
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping weekly ops digest
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "CRON_SECRET (repo Actions secret) is not set - scheduler inactive, skipping ping. Owner: add it under Settings > Secrets and variables > Actions."; exit 0; fi
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' --max-time 120 \
+            -H "x-cron-secret: $CRON_SECRET" \
+            https://www.answermissedcalls.com/api/cron/ops-digest)
+          echo "HTTP $code"; cat /tmp/resp.json; echo
+          test "$code" = "200"
