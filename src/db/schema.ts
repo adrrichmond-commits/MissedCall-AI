@@ -146,6 +146,12 @@ export interface Business {
    * The shareable link is /signup?ref=<code> — attribution lands in referrals.
    */
   referralCode: string | null;
+  /**
+   * Admin Sales tab (migration 024): attribution to an outside sales rep.
+   * NULL = no rep. One current rep per business; reattribution overwrites.
+   */
+  salesRepId: string | null;
+  salesRepAttributedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -163,6 +169,44 @@ export interface Referral {
   referrerBusinessId: string;
   /** The code as presented at signup. */
   referralCode: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+/**
+ * Admin Sales tab (migration 024): an outside sales rep. The comp schedule
+ * lives ON THE ROW AS DATA (never hard-coded) — bounty per plan, monthly
+ * rate per plan, and the optional step-down variant; NULL step-down = none.
+ * Rates are integer cents and default to 0: a rep with no schedule set
+ * renders attribution and an honest "$0 — no comp schedule set" note.
+ */
+export interface SalesRep {
+  id: string;
+  name: string;
+  contact: string | null;
+  /** false = deactivated; kept for history, no longer assignable. */
+  active: boolean;
+  bountyStarterCents: number;
+  bountyProCents: number;
+  monthlyStarterCents: number;
+  monthlyProCents: number;
+  stepDownAfterMonths: number | null;
+  stepDownMonthlyStarterCents: number | null;
+  stepDownMonthlyProCents: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+/**
+ * Admin Sales tab (migration 024): append-only payouts ledger. Recording a
+ * payout NEVER edits accrual — OWED is always computed as accrued − Σ this
+ * ledger, so the trail stays auditable. `note` is the owner's free-text
+ * period/context note ("Oct 2026", "bounties for the two October signups").
+ */
+export interface SalesRepPayout {
+  id: string;
+  repId: string;
+  amountCents: number;
+  note: string | null;
+  paidAt: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -203,7 +247,14 @@ export type AdminAuditAction =
   | 'impersonate_stop'
   | 'account_disable'
   | 'account_enable'
-  | 'plan_override';
+  | 'plan_override'
+  // Admin Sales tab (migration 024 widened the DB CHECK in step).
+  | 'sales_rep_created'
+  | 'sales_rep_updated'
+  | 'sales_rep_active_set'
+  | 'sales_attribution_set'
+  | 'sales_attribution_cleared'
+  | 'sales_payout_recorded';
 
 /**
  * One append-only row per privileged admin action. No UPDATE path ships:

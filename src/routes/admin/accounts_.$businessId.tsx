@@ -45,6 +45,9 @@ function AdminNav() {
       <Link to="/admin/metrics" search={{}} className="text-brand-700 hover:underline">
         Metrics
       </Link>
+      <Link to="/admin/sales" search={{}} className="text-brand-700 hover:underline">
+        Sales
+      </Link>
       <Link to="/admin/audit" className="text-brand-700 hover:underline">
         Audit log
       </Link>

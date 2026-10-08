@@ -96,6 +96,7 @@ function PromptsPage() {
           <a href="/admin/accounts" className="text-slate-600 hover:text-brand-700">Accounts</a>
           <a href="/admin/funnel" className="text-slate-600 hover:text-brand-700">Funnel</a>
           <a href="/admin/prompts" className="font-semibold text-brand-700">AI prompts</a>
+          <a href="/admin/sales" className="text-slate-600 hover:text-brand-700">Sales</a>
           <a href="/admin/health" className="text-slate-600 hover:text-brand-700">System health</a>
           <a href="/admin/audit" className="text-slate-600 hover:text-brand-700">Audit log</a>
         </nav>
