@@ -35,6 +35,11 @@ import { buildAnalyticsPageData, type AnalyticsPageData, type DigestStatusView }
 import { sanitizePerformanceDigestConfig } from "~/lib/digest";
 import type { LeadStatus } from "~/db/schema";
 import { TAKEOVER_REASON_LABELS, type TakeoverReasonKey } from "~/lib/takeover";
+import {
+  maybeAutoFirstRunLineTest,
+  readLineTestForBusiness,
+  startLineTestFromOwner,
+} from "~/lib/server/lineTest";
 
 const LEAD_STATUSES = LEAD_LIFECYCLE_STATUSES;
 /** Legacy statuses still accepted from old clients/filters, mapped forward. */
@@ -199,6 +204,11 @@ export const getDashboardDataFn = createServerFn({ method: "GET" }).handler(
       const trialEndsAt = ctx.business.trialEndsAt;
       const trialExpired = trialEndsAt != null && trialEndsAt.getTime() <= Date.now();
       const onActiveTrial = ctx.business.plan === "trial" && !trialExpired;
+      // Line self-test: the once-per-business auto hook. When the business has
+      // a line assigned but has never recorded a line test, fire the signed
+      // synthetic probe in the background — the dashboard never waits on it
+      // and the result surfaces on the "Phone line status" card.
+      void maybeAutoFirstRunLineTest(businessId);
       return {
         ok: true,
         data: {
@@ -1374,3 +1384,59 @@ export const resolveReviewFlagFn = createServerFn({ method: "POST" })
       return authErrorToResult(e);
     }
   });
+
+// ---------------------------------------------------------------------------
+// Phone line status (first-run self-test): read the stored result and trigger
+// a run. The card lives on the dashboard; the RUN is owner-only (the probe
+// texts the business's own alert phone), while any business role may SEE the
+// latest honest status.
+// ---------------------------------------------------------------------------
+export interface LineTestView {
+  phoneAssigned: boolean;
+  canRun: boolean;
+  /** Defensive parse of businesses.settings.lineTest — null = never run. */
+  result: import("~/lib/lineTest").StoredLineTest | null;
+  /** True when the stored "running" marker is fresh (stale runs render honestly as stale). */
+  runningFresh: boolean;
+}
+
+export const getLineTestStatusFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<AppResult<LineTestView>> => {
+    try {
+      const ctx = await requireAuth();
+      const businessId = ctx.business.id;
+      const result = await readLineTestForBusiness(businessId);
+      const runningFresh =
+        result != null &&
+        result.status === "running" &&
+        Date.now() - Date.parse(result.startedAt) < 4 * 60 * 1000;
+      return {
+        ok: true,
+        data: {
+          phoneAssigned: Boolean(ctx.business.phone?.trim?.()),
+          canRun: ctx.role === "owner",
+          result,
+          runningFresh,
+        },
+      };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  },
+);
+
+export const startLineTestFn = createServerFn({ method: "POST" }).handler(
+  async (): Promise<AppResult<{ started: boolean }>> => {
+    try {
+      // Owner-only BY DESIGN: the probe texts the business's own alert phone
+      // and consumes one AI turn + one outbound SMS. Managers see the status;
+      // only the owner pulls the trigger.
+      const ctx = await requireActiveWrite("owner");
+      const res = await startLineTestFromOwner(ctx.business.id);
+      if (!res.ok) return { ok: false, status: 409, error: "A line test is already running." };
+      return { ok: true, data: { started: true } };
+    } catch (e) {
+      return authErrorToResult(e);
+    }
+  },
+);

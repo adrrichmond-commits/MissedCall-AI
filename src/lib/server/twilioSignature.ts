@@ -148,6 +148,30 @@ function sortQueryString(params: Record<string, string>): string {
     .map((k) => k + params[k])
     .join("");
 }
+/**
+ * Compute the X-Twilio-Signature value Twilio would send for a request to
+ * `url` with `params`: base64(HMAC-SHA1(authToken, url + sortedParams)) — the
+ * exact inverse of twilioSignatureIsValid above. Used by the line self-test to
+ * sign its synthetic probe (the webhook validates it through the SAME code
+ * path real Twilio traffic takes), and by the unit suite's sign→validate
+ * round-trip check.
+ */
+export async function computeTwilioSignature(args: {
+  url: string;
+  params: Record<string, string>;
+  authToken: string;
+}): Promise<string> {
+  const data = args.url + sortQueryString(args.params);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(args.authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(mac)));
+}
 
 export async function twilioSignatureIsValid(args: {
   url: string;

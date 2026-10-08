@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { getDashboardDataFn, setFollowUpTaskDoneFn } from "~/lib/server/appFns";
+import { getDashboardDataFn, getLineTestStatusFn, setFollowUpTaskDoneFn, startLineTestFn, type LineTestView } from "~/lib/server/appFns";
+import type { LineTestLeg, LineTestLegKey, StoredLineTest } from "~/lib/lineTest";
 import {
   EmptyState,
   ErrorState,
@@ -68,6 +69,215 @@ function WelcomePanel() {
   );
 }
 
+const LEG_LABELS: Record<LineTestLegKey, string> = {
+  inbound: "Webhook received",
+  aiReply: "AI reply sent",
+  lead: "Lead captured",
+  ownerAlert: "Owner alert",
+};
+
+/**
+ * Phone line status (first-run self-test). On first load after the business
+ * gets a line assigned, the system probes its own webhook with a signed,
+ * honestly-labeled SYSTEM TEST message (from the business's own on-file alert
+ * number — never a customer) and verifies the real pipeline answered: message
+ * stored, AI reply sent, lead captured, owner alert recorded. The owner can
+ * re-run it anytime; the result shown is always the stored outcome of a real
+ * run — never a synthesized green.
+ */
+function PhoneLineStatusCard() {
+  const [view, setView] = useState<LineTestView | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const res = await getLineTestStatusFn();
+      if (res.ok) {
+        setView(res.data);
+        setLoadErr(null);
+      } else {
+        setLoadErr(res.error);
+      }
+    } catch {
+      setLoadErr("Could not load the line status. Check your connection and retry.");
+    }
+  };
+
+  // Poll while a run is in flight; stop when terminal so the page is calm.
+  const running = view?.runningFresh === true;
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => void refresh(), 3000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const runTest = async () => {
+    setActionErr(null);
+    setStarting(true);
+    try {
+      const res = await startLineTestFn();
+      if (!res.ok) setActionErr(res.error);
+      await refresh();
+    } catch {
+      setActionErr("Could not start the test. Check your connection and retry.");
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const r: StoredLineTest | null = view?.result ?? null;
+  const staleRun = r != null && r.status === "running" && !view?.runningFresh;
+
+  return (
+    <section
+      data-testid="line-status-card"
+      aria-labelledby="line-status"
+      className="mt-4 rounded-xl border border-slate-200 bg-white"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 sm:px-5">
+        <h2 id="line-status" className="text-sm font-semibold text-slate-900">
+          Phone line status
+        </h2>
+        {view?.canRun && !running ? (
+          <button
+            type="button"
+            onClick={() => void runTest()}
+            disabled={starting}
+            className="rounded-md bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+          >
+            {starting ? "Starting…" : r ? "Run test again" : "Run test"}
+          </button>
+        ) : null}
+      </div>
+      <div className="px-4 py-4 sm:px-5">
+        {loadErr ? (
+          <p className="text-sm text-red-700">{loadErr}</p>
+        ) : view == null ? (
+          <p className="text-sm text-slate-500">Loading…</p>
+        ) : !view.phoneAssigned ? (
+          <p className="text-sm text-slate-600">
+            No phone number is assigned to this business yet — the line test runs automatically once your
+            number is provisioned.
+          </p>
+        ) : r == null ? (
+          <p className="text-sm text-slate-600">
+            Never run. The test fires automatically once, or run it now: it texts your own number with a
+            clearly labeled SYSTEM TEST message and verifies the reply, the lead, and your alert all fire.
+          </p>
+        ) : r.status === "running" && view.runningFresh ? (
+          <p className="text-sm text-slate-600" data-testid="line-status-running">
+            Test running — the probe is in flight and the pipeline legs are being checked (up to ~90
+            seconds)…
+          </p>
+        ) : staleRun ? (
+          <div className="text-sm">
+            <p className="font-semibold text-amber-700">A previous test is stuck (no result recorded).</p>
+            <p className="mt-1 text-slate-600">
+              Started {formatRelative(r.startedAt)}. Run again for a fresh result.
+            </p>
+          </div>
+        ) : (
+          <LineTestResultView r={r} />
+        )}
+        {actionErr ? <p className="mt-2 text-sm text-red-700">{actionErr}</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function LineTestResultView({ r }: { r: StoredLineTest }) {
+  const tone =
+    r.status === "pass"
+      ? { chip: "bg-green-50 text-green-800 ring-green-600/20", text: "text-green-800", icon: "✅" }
+      : r.status === "partial"
+        ? { chip: "bg-amber-50 text-amber-800 ring-amber-600/20", text: "text-amber-800", icon: "🟠" }
+        : r.status === "fail"
+          ? { chip: "bg-red-50 text-red-800 ring-red-600/20", text: "text-red-800", icon: "❌" }
+          : { chip: "bg-slate-100 text-slate-700 ring-slate-500/20", text: "text-slate-700", icon: "—" };
+  const headline =
+    r.status === "pass"
+      ? "Pass — the full line pipeline answered."
+      : r.status === "partial"
+        ? "Partial — the pipeline ran, but not every leg verified."
+        : r.status === "fail"
+          ? "Failed — the line pipeline did not complete."
+          : "Not configured";
+  return (
+    <div data-testid={"line-status-" + r.status}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset " +
+            tone.chip
+          }
+        >
+          {tone.icon} {r.status.toUpperCase()}
+        </span>
+        <span className={"text-sm font-medium " + tone.text}>{headline}</span>
+        {r.finishedAt ? (
+          <span className="text-xs text-slate-400">Run finished {formatRelative(r.finishedAt)}</span>
+        ) : null}
+        {r.trigger === "auto_first_run" ? (
+          <span className="text-xs text-slate-400">· automatic first run</span>
+        ) : null}
+      </div>
+
+      {r.status === "not_configured" ? (
+        <p className="mt-2 text-sm text-slate-600">{r.reason ?? "Prerequisites for the test are missing."}</p>
+      ) : (
+        <>
+          {r.lastPassAt && r.status !== "pass" ? (
+            <p className="mt-1 text-xs text-slate-500">
+              Last full pass: {formatRelative(r.lastPassAt)}.
+            </p>
+          ) : null}
+          <ul className="mt-2 space-y-1.5">
+            {(Object.keys(LEG_LABELS) as LineTestLegKey[]).map((key) => {
+              const leg: LineTestLeg | undefined = r.legs?.[key];
+              return (
+                <li key={key} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                  <span
+                    className={
+                      "inline-flex min-w-[6.5rem] justify-center rounded px-1.5 py-0.5 text-xs font-semibold ring-1 ring-inset " +
+                      (!leg
+                        ? "bg-slate-100 text-slate-500 ring-slate-400/20"
+                        : leg.state === "observed"
+                          ? "bg-green-50 text-green-800 ring-green-600/20"
+                          : leg.state === "deduped"
+                            ? "bg-sky-50 text-sky-800 ring-sky-600/20"
+                            : "bg-red-50 text-red-800 ring-red-600/20")
+                    }
+                  >
+                    {LEG_LABELS[key]}
+                    {!leg ? " —" : leg.state === "observed" ? " ✓" : leg.state === "deduped" ? " ✓ (deduped)" : " ✗"}
+                  </span>
+                  <span className="text-slate-600">{leg?.detail ?? "Not checked this run."}</span>
+                  {leg?.evidenceId ? (
+                    <span className="text-xs text-slate-400">[{leg.evidenceId.slice(0, 8)}]</span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          {r.webhookHttpStatus != null && r.webhookHttpStatus !== 200 ? (
+            <p className="mt-2 text-xs text-slate-500">
+              Webhook evidence: HTTP {r.webhookHttpStatus}
+              {r.webhookBodySnippet ? " — " + r.webhookBodySnippet : ""}
+            </p>
+          ) : null}
+        </>
+      )}
+      {r.error ? <p className="mt-2 text-xs text-red-700">{r.error}</p> : null}
+    </div>
+  );
+}
+
 function DashboardPage() {
   const data = Route.useLoaderData();
   const { welcome } = Route.useSearch();
@@ -102,6 +312,10 @@ function DashboardPage() {
       {welcome ? <WelcomePanel /> : null}
 
       {trialView?.show ? <TrialValueBanner view={trialView} /> : null}
+
+      {/* Phone line status — the first-run self-test result. Honest states
+          only: green only from a completed run, stale runs render as stale. */}
+      <PhoneLineStatusCard />
 
       {/*
         P4-V owner priority order — what a plumber must act on, top to bottom:
