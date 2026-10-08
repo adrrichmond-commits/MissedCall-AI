@@ -180,6 +180,16 @@ export function daysLeftUntil(atIso: string, now: Date): number {
   return Math.max(0, Math.ceil(diff / DAY_MS));
 }
 
+/**
+ * Trial→paid conversion rate, percent 0–100. THE honesty rule, shared by the
+ * /admin/metrics view AND the weekly ops digest: a 0-denominator rate is
+ * NEVER rendered as 0% — null means "no trials have started yet" and every
+ * consumer renders it as "—".
+ */
+export function conversionRatePct(trialStarts: number, paidAccounts: number): number | null {
+  return trialStarts > 0 ? Math.round((paidAccounts / trialStarts) * 100) : null;
+}
+
 export function computeAdminMetrics(
   raw: AdminMetricsRaw,
   filters: AdminMetricsFilters,
@@ -236,7 +246,7 @@ export function computeAdminMetrics(
   // --- trial→paid conversion (P4-A funnel events, demo excluded) -----------
   const trialStarts = Math.max(0, Math.floor(raw.trialStarts));
   const paidAccounts = Math.max(0, Math.floor(raw.paidAccounts));
-  const ratePct = trialStarts > 0 ? Math.round((paidAccounts / trialStarts) * 100) : null;
+  const ratePct = conversionRatePct(trialStarts, paidAccounts);
 
   // --- attention lists already ISO; decorate ending-soon with daysLeft -----
   const trialEndingSoon = raw.trialEndingSoon.map((i) => ({

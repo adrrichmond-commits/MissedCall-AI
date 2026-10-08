@@ -12,7 +12,7 @@
 import type { Notification } from "../schema";
 import { assertServer, listClause, sql, type ListOptions } from "./shared";
 
-/** Must match the notifications_type_check constraint (007, widened by 009/020/021). */
+/** Must match the notifications_type_check constraint (007, widened by 009/020/021/023). */
 export const NOTIFICATION_TYPES = [
   "new_lead",
   "lead_booked",
@@ -23,6 +23,7 @@ export const NOTIFICATION_TYPES = [
   "ai_loop_detected",
   "takeover_needed",
   "performance_digest",
+  "ops_digest",
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
@@ -221,6 +222,24 @@ export async function digestSentForPeriod(businessId: string, periodKey: string)
   const rows = await db.query(
     `SELECT 1 FROM notifications
      WHERE business_id = $1 AND type = 'performance_digest' AND payload->>'periodKey' = $2
+     LIMIT 1`,
+    [businessId, periodKey],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * True when an ops_digest for this exact period key already exists
+ * (payload->>'periodKey') — the weekly ops digest's idempotency cap, mirroring
+ * digestSentForPeriod: a period is digested at most once no matter how often
+ * the cron is pinged. Attached to the platform owner's business row.
+ */
+export async function opsDigestSentForPeriod(businessId: string, periodKey: string): Promise<boolean> {
+  assertServer();
+  const db = sql();
+  const rows = await db.query(
+    `SELECT 1 FROM notifications
+     WHERE business_id = $1 AND type = 'ops_digest' AND payload->>'periodKey' = $2
      LIMIT 1`,
     [businessId, periodKey],
   );
