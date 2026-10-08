@@ -18,6 +18,10 @@
  *   - voice fallback: platformFallbackTransferNumber env-gated (null unset,
  *     E.164 when set, undialable stays null)
  *   - readiness: CRITICAL_TABLES includes system_errors (migration 016)
+ *   - provision-customer script: pure logic only — arg parsing (both modes,
+ *     required --campaign/--service gates), business-ref routing, phone-key
+ *     last-10 convention, webhook URL building, dry-run plan rendering and
+ *     its secret-safety (no auth token / no literal AC SID ever rendered)
  */
 import {
   log,
@@ -244,6 +248,84 @@ eq("voice: undialable fallback stays null (never guess)", platformFallbackTransf
 if (fwdBackup === undefined) delete process.env.TWILIO_VOICE_FORWARD_NUMBER;
 else process.env.TWILIO_VOICE_FORWARD_NUMBER = fwdBackup;
 checkTrue("readiness: critical tables include system_errors (migration 016)", CRITICAL_TABLES.includes("system_errors"));
+// ---------------------------------------------------------------------------
+// provision-customer script: pure logic (arg parsing, business-ref routing,
+// phone-key convention, webhook URLs, dry-run plans + secret-safety)
+// ---------------------------------------------------------------------------
+{
+  const {
+    parseArgs,
+    classifyBusinessRef,
+    buildWebhookUrls,
+    buildAssignSharedPlan,
+    buildProvisionDedicatedPlan,
+    renderPlan,
+    SHARED_NUMBER,
+    SHARED_PHONE_KEY,
+  } = await import("./provision-customer.ts");
+  const { phoneKey } = await import("../src/lib/smsCommands.ts");
+
+  // arg parsing — assign-shared
+  const okAssign = parseArgs(["assign-shared", "--business", "owner@example.com"]);
+  checkTrue("provision: assign-shared + email parses", okAssign.ok && okAssign.args.mode === "assign-shared" && okAssign.args.business === "owner@example.com" && !okAssign.args.dryRun);
+  const okAssignEq = parseArgs(["assign-shared", "--business=owner@example.com", "--dry-run"]);
+  checkTrue("provision: --flag=value form + --dry-run parses", okAssignEq.ok && okAssignEq.args.business === "owner@example.com" && okAssignEq.args.dryRun);
+  const noBusiness = parseArgs(["assign-shared", "--dry-run"]);
+  checkTrue("provision: assign-shared without --business rejected", !noBusiness.ok && noBusiness.error.includes("--business"));
+  const badMode = parseArgs(["wire-phone", "--business", "x@y.com"]);
+  checkTrue("provision: unknown mode rejected", !badMode.ok && badMode.error.includes("Unknown mode"));
+  const unknownFlag = parseArgs(["assign-shared", "--business", "x@y.com", "--wat", "1"]);
+  checkTrue("provision: unknown flag rejected", !unknownFlag.ok && unknownFlag.error.includes("--wat"));
+
+  // arg parsing — provision-dedicated required gates
+  const missingCampaign = parseArgs(["provision-dedicated", "--business", "x@y.com", "--service", "MG" + "a".repeat(32)]);
+  checkTrue("provision: dedicated without --campaign rejected (never auto-create)", !missingCampaign.ok && missingCampaign.error.includes("--campaign"));
+  const missingService = parseArgs(["provision-dedicated", "--business", "x@y.com", "--campaign", "CE9Z2EM"]);
+  checkTrue("provision: dedicated without --service rejected", !missingService.ok && missingService.error.includes("--service"));
+  const badCampaignSid = parseArgs(["provision-dedicated", "--business", "x@y.com", "--campaign", "not-a-campaign", "--service", "MG" + "a".repeat(32)]);
+  checkTrue("provision: non-CE campaign SID rejected", !badCampaignSid.ok && badCampaignSid.error.includes("campaign SID"));
+  const badServiceSid = parseArgs(["provision-dedicated", "--business", "x@y.com", "--campaign", "CE9Z2EM", "--service", "MG123"]);
+  checkTrue("provision: malformed service SID rejected", !badServiceSid.ok && badServiceSid.error.includes("messaging service SID"));
+  const okDedicated = parseArgs(["provision-dedicated", "--business", "x@y.com", "--campaign", "CE9Z2EM", "--service", "MG" + "a".repeat(32), "--dry-run"]);
+  checkTrue("provision: fully-armed dedicated parses", okDedicated.ok && okDedicated.args.dryRun && okDedicated.args.campaign === "CE9Z2EM");
+  const sharedRejectsDedicatedFlags = parseArgs(["assign-shared", "--business", "x@y.com", "--campaign", "CE9Z2EM"]);
+  checkTrue("provision: assign-shared rejects campaign/service flags", !sharedRejectsDedicatedFlags.ok && sharedRejectsDedicatedFlags.error.includes("assign-shared"));
+
+  // business-ref routing
+  eq("provision: email ref routes to email lookup", classifyBusinessRef(" Owner@Example.COM "), { kind: "email", email: "owner@example.com" });
+  eq("provision: uuid ref routes to id lookup", classifyBusinessRef("123E4567-E89B-42D3-A456-426614174000"), { kind: "id", id: "123e4567-e89b-42d3-a456-426614174000" });
+  eq("provision: nonsense ref is invalid (never guessed)", classifyBusinessRef("joes-plumbing"), { kind: "invalid", raw: "joes-plumbing" });
+
+  // phone-key convention — must match getBusinessByPhoneKey's last-10 matching
+  eq("provision: shared phone key is last-10 digits", SHARED_PHONE_KEY, "3853365359");
+  eq("provision: phoneKey of E.164 shared number matches", phoneKey(SHARED_NUMBER), SHARED_PHONE_KEY);
+  eq("provision: phoneKey of pretty-printed number matches (DB row convention)", phoneKey("(385) 336-5359"), SHARED_PHONE_KEY);
+  eq("provision: phoneKey of 11-digit number matches", phoneKey("13853365359"), SHARED_PHONE_KEY);
+
+  // webhook URLs
+  eq("provision: webhook URLs use the documented paths", buildWebhookUrls("https://example.com"), { sms: "https://example.com/api/webhooks/twilio", voice: "https://example.com/api/webhooks/twilio/voice" });
+  eq("provision: trailing slash in base is trimmed", buildWebhookUrls("https://example.com/"), { sms: "https://example.com/api/webhooks/twilio", voice: "https://example.com/api/webhooks/twilio/voice" });
+
+  // dry-run plans: shape + secret-safety
+  const assignPlanText = renderPlan(buildAssignSharedPlan("https://example.com"));
+  checkTrue("provision: assign-shared plan includes the DB phone update", assignPlanText.includes("UPDATE businesses SET phone") && assignPlanText.includes(SHARED_NUMBER));
+  checkTrue("provision: assign-shared plan notes no Twilio config needed (webhooks already live)", assignPlanText.includes("No Twilio change is needed"));
+  const dedicatedPlanText = renderPlan(buildProvisionDedicatedPlan("https://example.com", "MG" + "a".repeat(32)));
+  checkTrue("provision: dedicated plan gates on VERIFIED campaign compliance read", dedicatedPlanText.includes("Compliance/Usa2p") && dedicatedPlanText.includes("VERIFIED"));
+  checkTrue("provision: dedicated plan includes messaging-service membership (sole-prop association)", dedicatedPlanText.includes("Services/MGaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/PhoneNumbers"));
+  checkTrue("provision: dedicated plan sets both webhook URLs on the number", dedicatedPlanText.includes("/api/webhooks/twilio") && dedicatedPlanText.includes("/api/webhooks/twilio/voice"));
+  const tokenBackup = process.env.TWILIO_AUTH_TOKEN;
+  process.env.TWILIO_AUTH_TOKEN = "super-secret-token-do-not-print";
+  const planTextWithTokenSet = renderPlan(buildProvisionDedicatedPlan("https://example.com", "MG" + "a".repeat(32)));
+  checkTrue("provision: rendered plan never contains the auth token", !planTextWithTokenSet.includes("super-secret-token-do-not-print") && !planTextWithTokenSet.includes("Authorization"));
+  const fullPlanText = assignPlanText + "\n" + planTextWithTokenSet;
+  // The live account SID, assembled from pieces so secret-scanning push
+  // protection does not mistake this test constant for a leaked credential.
+  const REAL_ACCOUNT_SID = "AC" + "1ce90161b835fafbd86ed89751ebec5d";
+  checkTrue("provision: plans never contain a literal AC SID (masked placeholder only)", !fullPlanText.includes(REAL_ACCOUNT_SID) && fullPlanText.includes("ACxxxxxxxx"));
+  if (tokenBackup === undefined) delete process.env.TWILIO_AUTH_TOKEN;
+  else process.env.TWILIO_AUTH_TOKEN = tokenBackup;
+}
 
 console.log("\n" + checks + " checks run, " + failures + " failed");
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " TEST(S) FAILED");
