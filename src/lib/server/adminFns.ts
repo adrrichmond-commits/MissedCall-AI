@@ -217,6 +217,7 @@ import {
   type P4APromptsView,
 } from "./adminReads";
 import { insertPromptVersion, activatePromptVersion } from "~/db/queries/prompts";
+import { appendAdminAudit } from "~/db/queries/admin";
 import { clearPromptOverrideCache } from "./promptOverrides";
 import { isPromptSurface, validatePromptBody, validatePromptNote } from "~/lib/analytics/prompts";
 
@@ -251,6 +252,13 @@ export const savePromptVersionFn = createServerFn({ method: "POST" })
         editedBy: ctx.user.email,
       });
       clearPromptOverrideCache(data.surface);
+      // Audit fix #5: prompt saves change live AI behavior, so they belong in
+      // the central append-only audit trail (same pattern as the sales fns).
+      await appendAdminAudit({
+        adminUserId: ctx.user.id,
+        action: "prompt_version_saved",
+        detail: { surface: data.surface, version: row.version, ...(note ? { note } : {}) },
+      });
       return { ok: true, data: { version: row.version } };
     } catch (e) {
       return adminErrorToResult(e);
@@ -262,7 +270,7 @@ export const revertPromptVersionFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { surface?: unknown; version?: unknown })
   .handler(async ({ data }): Promise<AdminResult<{ version: number }>> => {
     try {
-      await requirePlatformAdmin();
+      const ctx = await requirePlatformAdmin();
       if (!isPromptSurface(data?.surface)) {
         return { ok: false, status: 400, error: "Unknown prompt surface." };
       }
@@ -273,6 +281,13 @@ export const revertPromptVersionFn = createServerFn({ method: "POST" })
       const row = await activatePromptVersion(data.surface, version);
       if (!row) return { ok: false, status: 404, error: "That version does not exist." };
       clearPromptOverrideCache(data.surface);
+      // Audit fix #5: the revert pointer flip changes live AI behavior too —
+      // audited alongside the save (append-only, never edited).
+      await appendAdminAudit({
+        adminUserId: ctx.user.id,
+        action: "prompt_version_reverted",
+        detail: { surface: data.surface, version: row.version },
+      });
       return { ok: true, data: { version: row.version } };
     } catch (e) {
       return adminErrorToResult(e);

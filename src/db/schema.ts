@@ -254,7 +254,10 @@ export type AdminAuditAction =
   | 'sales_rep_active_set'
   | 'sales_attribution_set'
   | 'sales_attribution_cleared'
-  | 'sales_payout_recorded';
+  | 'sales_payout_recorded'
+  // Prompt save/revert (migration 025 widened the DB CHECK in step).
+  | 'prompt_version_saved'
+  | 'prompt_version_reverted';
 
 /**
  * One append-only row per privileged admin action. No UPDATE path ships:

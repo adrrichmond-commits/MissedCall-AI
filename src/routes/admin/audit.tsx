@@ -35,6 +35,8 @@ const ACTION_LABELS: Record<string, { label: string; tone: "brand" | "amber" | "
   account_disable: { label: "Account disabled", tone: "red" },
   account_enable: { label: "Account enabled", tone: "green" },
   plan_override: { label: "Plan override", tone: "brand" },
+  prompt_version_saved: { label: "Prompt saved", tone: "brand" },
+  prompt_version_reverted: { label: "Prompt reverted", tone: "amber" },
 };
 
 function detailSummary(e: AdminAuditView): string {

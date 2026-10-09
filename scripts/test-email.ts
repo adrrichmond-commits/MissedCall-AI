@@ -424,6 +424,135 @@ check(
   ["appointment_requested", "new_lead", "payment_failed", "performance_digest"],
 );
 
+// ---------------------------------------------------------------------------
+// Auth token email delivery (audit fix CRITICAL #1, 2026-10-09).
+//
+// The regression this closes: verification/reset links used to go ONLY to
+// server logs (logDeliveryLink) — raw tokens in logs + locked-out pilots.
+// These checks pin the replacement:
+//   - the configured path rides the SAME transport as every other email
+//     (stubbed here; the Knock request shape is proven by the Knock suite),
+//   - the unconfigured path is an HONEST skip with an explicit warning,
+//   - a raw token NEVER appears in ANY captured log line on ANY path.
+// ---------------------------------------------------------------------------
+import {
+  buildAuthEmailPath,
+  buildAuthEmailSubject,
+  buildAuthEmailText,
+  deliverAuthEmail,
+  formatAuthEmailExpiry,
+  type AuthEmailTransport,
+} from "../src/lib/server/authEmailDelivery";
+
+/** Capture every console line emitted while `fn` runs, then restore. */
+async function captureConsole(fn: () => Promise<unknown>): Promise<{ lines: string[]; result: unknown }> {
+  const lines: string[] = [];
+  const push = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  const orig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+  console.log = push; console.warn = push; console.error = push; console.info = push;
+  try {
+    const result = await fn();
+    return { lines, result };
+  } finally {
+    console.log = orig.log; console.warn = orig.warn; console.error = orig.error; console.info = orig.info;
+  }
+}
+
+/** Boolean-flavored check (this suite predates checkTrue; defined locally). */
+function checkTrue(name: string, cond: boolean, detail = ""): void {
+  checks++;
+  if (!cond) {
+    failures++;
+    console.log("FAIL " + name + (detail ? " — " + detail : ""));
+  } else {
+    console.log("ok   " + name);
+  }
+}
+
+const TOKEN = "RAWTOKEN-audit-fix-do-not-log-8f3b9c";
+const ORIGIN = "https://www.answermissedcalls.com";
+const VERIFY_TTL = 24 * 60 * 60 * 1000;
+const RESET_TTL = 60 * 60 * 1000;
+const neverConfigured: AuthEmailTransport = { isConfigured: () => false, label: () => null, send: async () => { throw new Error("should not be called"); } };
+const boomTransport: AuthEmailTransport = { isConfigured: () => true, label: () => "stub", send: async () => { throw new Error("provider rejected: 503"); } };
+
+// Builders: minimal, truthful content (brand, purpose, expiry, link).
+check("authEmail: paths map to the token routes", buildAuthEmailPath("email-verification") + "|" + buildAuthEmailPath("password-reset"), "/verify-email|/reset-password");
+check("authEmail: subjects name the purpose + brand", buildAuthEmailSubject("email-verification") + "|" + buildAuthEmailSubject("password-reset"), "Verify your email for MissedCall AI|Reset your MissedCall AI password");
+check("authEmail: expiry formatting from the token TTLs", formatAuthEmailExpiry(VERIFY_TTL) + "|" + formatAuthEmailExpiry(RESET_TTL), "24 hours|1 hour");
+{
+  const verifyText = buildAuthEmailText("email-verification", ORIGIN + "/verify-email?token=" + TOKEN, VERIFY_TTL);
+  const resetText = buildAuthEmailText("password-reset", ORIGIN + "/reset-password?token=" + TOKEN, RESET_TTL);
+  checkTrue("authEmail: verification body carries brand, link, expiry, ignore-branch", verifyText.includes("MissedCall AI") && verifyText.includes("/verify-email?token=") && verifyText.includes("expires in 24 hours") && verifyText.includes("didn't create this account"));
+  checkTrue("authEmail: reset body carries link, expiry, ignore-branch", resetText.includes("/reset-password?token=") && resetText.includes("expires in 1 hour") && resetText.includes("password stays unchanged"));
+}
+
+// 1. NOT configured → honest skip with an explicit warning, NO token anywhere.
+{
+  const { lines, result } = await captureConsole(() =>
+    deliverAuthEmail({ kind: "password-reset", to: "owner@example.com", rawToken: TOKEN, ttlMs: RESET_TTL, origin: ORIGIN, transport: neverConfigured }),
+  );
+  const r = result as Awaited<ReturnType<typeof deliverAuthEmail>>;
+  check("authEmail: unconfigured transport → skipped_not_configured (never faked sent)", r.outcome, "skipped_not_configured");
+  checkTrue("authEmail: skip warning is explicit about NOT emailing", (r.detail ?? "").includes("no email transport configured") && lines.some((l) => l.includes("NO EMAIL TRANSPORT CONFIGURED") && l.includes("NOT emailed") && l.includes("NOT logged")));
+  checkTrue("authEmail: skip warning names the fix (KNOCK_API_KEY)", lines.some((l) => l.includes("KNOCK_API_KEY") && l.includes("EMAIL_API_KEY")));
+  checkTrue("authEmail: NO raw token in ANY log line on the skip path", !lines.some((l) => l.includes(TOKEN)));
+}
+
+// 2. No request origin → honest skip (a link nobody can open is not a link).
+{
+  const { lines, result } = await captureConsole(() =>
+    deliverAuthEmail({ kind: "email-verification", to: "owner@example.com", rawToken: TOKEN, ttlMs: VERIFY_TTL, origin: null, transport: boomTransport }),
+  );
+  const r = result as Awaited<ReturnType<typeof deliverAuthEmail>>;
+  check("authEmail: no origin → skipped_no_origin", r.outcome, "skipped_no_origin");
+  checkTrue("authEmail: no-origin skip NEVER logs the token", !lines.some((l) => l.includes(TOKEN)));
+}
+
+// 3. Configured → sent through the transport; the token lives ONLY in the email.
+{
+  let sentArgs: { to: string; subject: string; text: string } | null = null;
+  const okTransport: AuthEmailTransport = {
+    isConfigured: () => true,
+    label: () => "knock",
+    send: async (args) => { sentArgs = args; return { id: "stub-1" }; },
+  };
+  const { lines, result } = await captureConsole(() =>
+    deliverAuthEmail({ kind: "password-reset", to: "owner@example.com", rawToken: TOKEN, ttlMs: RESET_TTL, origin: ORIGIN, transport: okTransport }),
+  );
+  const r = result as Awaited<ReturnType<typeof deliverAuthEmail>>;
+  check("authEmail: configured transport → sent with provider id", { outcome: r.outcome, id: r.emailId }, { outcome: "sent", id: "stub-1" });
+  check("authEmail: email addressed to the account holder with the reset subject", { to: sentArgs!.to, subject: sentArgs!.subject }, { to: "owner@example.com", subject: buildAuthEmailSubject("password-reset") });
+  checkTrue("authEmail: the token travels ONLY inside the email body (that is its one job)", sentArgs!.text.includes("/reset-password?token=" + encodeURIComponent(TOKEN)));
+  checkTrue("authEmail: success log line is token-free", !lines.some((l) => l.includes(TOKEN)));
+  checkTrue("authEmail: success log is honest about transport + recipient", lines.some((l) => l.includes("sent to owner@example.com via knock")));
+}
+
+// 4. Provider failure → honest failed outcome; still zero tokens in logs.
+{
+  const { lines, result } = await captureConsole(() =>
+    deliverAuthEmail({ kind: "email-verification", to: "owner@example.com", rawToken: TOKEN, ttlMs: VERIFY_TTL, origin: ORIGIN, transport: boomTransport }),
+  );
+  const r = result as Awaited<ReturnType<typeof deliverAuthEmail>>;
+  check("authEmail: provider failure → failed with the provider's own message", { outcome: r.outcome, detail: r.detail }, { outcome: "failed", detail: "provider rejected: 503" });
+  checkTrue("authEmail: failure path NEVER reports a send", !lines.some((l) => l.includes("email sent")));
+  checkTrue("authEmail: NO raw token in ANY log line on the failure path", !lines.some((l) => l.includes(TOKEN)));
+}
+
+// 5. Wiring pins (source greps, p4a pattern): the old log-only path is GONE
+//    and all three token flows call the delivery + rate-limit seams.
+{
+  const { readFileSync } = await import("node:fs");
+  const authFns = readFileSync(new URL("../src/lib/server/authFns.ts", import.meta.url), "utf8");
+  const delivery = readFileSync(new URL("../src/lib/server/authEmailDelivery.ts", import.meta.url), "utf8");
+  const srcTree = readFileSync(new URL("../src/lib/server/rateLimit.ts", import.meta.url), "utf8");
+  checkTrue("authEmail: logDeliveryLink is deleted — no raw-token logging path remains", !authFns.includes("logDeliveryLink"));
+  checkTrue("authEmail: signup + forgot-password + resend all ride deliverAuthEmail", (authFns.match(/deliverAuthEmail\(/g) ?? []).length === 3);
+  checkTrue("authEmail: delivery module never interpolates a token into a log call", !delivery.includes("`") || !/console\.(log|warn|error|info)\([^)]*\$\{/.test(delivery));
+  checkTrue("authEmail: token endpoints are rate-limited (verify/reset/resend buckets)", authFns.includes('enforceAuthRateLimit("auth_verify_email")') && authFns.includes('enforceAuthRateLimit("auth_reset_password")') && authFns.includes('enforceAuthRateLimit("auth_resend_verification")'));
+  checkTrue("authEmail: the three buckets exist in the ONE rate-limit config", srcTree.includes("auth_verify_email") && srcTree.includes("auth_reset_password") && srcTree.includes("auth_resend_verification"));
+}
+
 console.log("\n" + checks + " checks run, " + failures + " failed");
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " TEST(S) FAILED");
 process.exit(failures === 0 ? 0 : 1);

@@ -36,7 +36,11 @@ const serverPath = new URL("../dist/server/server.js", import.meta.url).pathname
 const { default: handler } = (await import(serverPath)) as { default: unknown };
 const PORT = Number(process.env.PORT ?? 3210);
 const HOST = "127.0.0.1";
-const CLIENT_DIR = new URL("./dist/client", import.meta.url).pathname;
+// "../" — same resolution as serverPath above: dist/ sits NEXT TO scripts/,
+// not inside it ("./dist/client" resolved to scripts/dist/client, so the
+// static-file branch never matched and every asset fell through to the SSR
+// handler — first exposed when public/robots.txt + sitemap.xml landed).
+const CLIENT_DIR = new URL("../dist/client", import.meta.url).pathname;
 
 function cacheHeadersFor(pathname: string): string {
   if (pathname.startsWith("/assets/")) return "public, max-age=31536000, immutable";

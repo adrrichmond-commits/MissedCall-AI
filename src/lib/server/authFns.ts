@@ -2,9 +2,11 @@
  * Auth server functions: signup, login, logout, password reset, email
  * verification. Every handler below runs server-side only.
  *
- * Honest-delivery note: no email provider is connected in Phase 1. Token
- * emails are NOT faked — the delivery step logs the link server-side and the
- * UI states that delivery is pending provider setup.
+ * Token-link delivery (audit fix 2026-10-09): verification and reset links go
+ * out through the REAL email transport (src/lib/server/authEmailDelivery.ts —
+ * the shared sendEmail path, Knock primary) instead of server logs. When no
+ * transport is configured the delivery is honestly skipped with an explicit
+ * warning; raw tokens NEVER reach any log line.
  */
 import { createServerFn } from "@tanstack/react-start";
 import { getRequestHeaders } from "@tanstack/react-start/server";
@@ -24,6 +26,7 @@ import { hashPassword, verifyPassword } from "~/lib/server/password";
 import { trackFunnelAll } from "~/lib/server/funnelTrack";
 import { applyReferralAtSignup, ensureReferralCode } from "~/db/queries/referrals";
 import { normalizeReferralCode } from "~/lib/referralCode";
+import { deliverAuthEmail } from "./authEmailDelivery";
 
 // ---------------------------------------------------------------------------
 // Validation helpers (server-side, never trust client input)
@@ -94,6 +97,25 @@ function enforceAuthRateLimit(bucket: RateLimitBucket): void {
   }
 }
 
+/**
+ * The app's public origin from the incoming request, for building absolute
+ * token links that resolve in any environment (live site, working site,
+ * local dev). Same x-forwarded-host/host + x-forwarded-proto pattern as
+ * appOriginFromRequest() in stripeApi.ts, kept local so auth does not import
+ * the Stripe module.
+ */
+function requestOrigin(): string | null {
+  try {
+    const headers = getRequestHeaders();
+    const host = headers.get("x-forwarded-host") ?? headers.get("host");
+    if (!host) return null;
+    const proto = headers.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+    return proto + "://" + host;
+  } catch {
+    return null; // No request context (scripts/tests) — delivery skips honestly.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Signup — creates business + owner user in ONE transaction, then auto-login
 // ---------------------------------------------------------------------------
@@ -160,9 +182,17 @@ export const signupFn = createServerFn({ method: "POST" })
       console.error("[referral] non-fatal failure:", refErr);
     }
 
-    // Delivery is pending provider setup — log the link server-side only.
+    // Email the verification link through the real transport (honest skip +
+    // explicit warning when none is configured — never a faked "sent", and
+    // the raw token never reaches a log line).
     const vt = await issueEmailVerificationToken(user.id);
-    logDeliveryLink("email-verification", email, vt.rawToken);
+    await deliverAuthEmail({
+      kind: "email-verification",
+      to: email,
+      rawToken: vt.rawToken,
+      ttlMs: EMAIL_VERIFICATION_TTL_MS,
+      origin: requestOrigin(),
+    });
 
     await issueSession(user.id); // auto-login after signup
     return { ok: true };
@@ -232,7 +262,13 @@ export const forgotPasswordFn = createServerFn({ method: "POST" })
     const user = await q.findUserByEmail(email);
     if (user) {
       const t = await issuePasswordResetToken(user.id);
-      logDeliveryLink("password-reset", email, t.rawToken);
+      await deliverAuthEmail({
+        kind: "password-reset",
+        to: email,
+        rawToken: t.rawToken,
+        ttlMs: PASSWORD_RESET_TTL_MS,
+        origin: requestOrigin(),
+      });
     }
     // Identical response whether or not the email exists (no enumeration).
     return { ok: true };
@@ -245,6 +281,9 @@ export const resetPasswordFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { token: string; password: string })
   .handler(async ({ data }): Promise<{ ok: boolean; error?: string }> => {
   try {
+    // Audit fix #4: token endpoints are rate-limited per client IP like the
+    // other unauthenticated auth entry points (generous — humans never trip).
+    enforceAuthRateLimit("auth_reset_password");
     const token = requiredString(data?.token, "Token", 10, 200);
     const password = assertStrongPassword(data?.password);
     const tokenHash = await hashToken(token);
@@ -271,6 +310,9 @@ export const verifyEmailFn = createServerFn({ method: "POST" })
   .validator((d: unknown) => d as { token: string })
   .handler(async ({ data }): Promise<{ ok: boolean; error?: string }> => {
   try {
+    // Audit fix #4: per-IP rate limit on the token endpoints (generous limit,
+    // blunts unthrottled token-guessing noise).
+    enforceAuthRateLimit("auth_verify_email");
     const token = requiredString(data?.token, "Token", 10, 200);
     const tokenHash = await hashToken(token);
     const record = await q.findValidEmailVerificationToken(tokenHash);
@@ -288,12 +330,21 @@ export const verifyEmailFn = createServerFn({ method: "POST" })
 /** Re-issue a verification token for the logged-in user (banner button). */
 export const resendVerificationFn = createServerFn({ method: "POST" }).handler(async (): Promise<{ ok: boolean; error?: string }> => {
   try {
+    // Audit fix #4: this endpoint SENDS EMAIL once transport is wired, so the
+    // per-IP limit is the spam/cost backstop (tighter than the token checks).
+    enforceAuthRateLimit("auth_resend_verification");
     const ctx = await getSessionFromRequest();
     if (!ctx) return { ok: false, error: "Authentication required." };
     if (ctx.user.emailVerified) return { ok: true };
     await q.invalidateEmailVerificationTokens(ctx.user.id);
     const t = await issueEmailVerificationToken(ctx.user.id);
-    logDeliveryLink("email-verification", ctx.user.email, t.rawToken);
+    await deliverAuthEmail({
+      kind: "email-verification",
+      to: ctx.user.email,
+      rawToken: t.rawToken,
+      ttlMs: EMAIL_VERIFICATION_TTL_MS,
+      origin: requestOrigin(),
+    });
     return { ok: true };
   } catch (e) {
     return toClientError(e);
@@ -318,18 +369,6 @@ async function issuePasswordResetToken(userId: string) {
   const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
   await q.createPasswordResetToken(userId, tokenHash, expiresAt);
   return { rawToken };
-}
-
-/**
- * The "email delivery" step. NO email provider is connected in Phase 1, so
- * nothing is faked: the link is logged server-side for manual delivery, and
- * every UI surface says delivery is pending provider setup.
- */
-function logDeliveryLink(kind: "email-verification" | "password-reset", email: string, rawToken: string): void {
-  const path = kind === "email-verification" ? "/verify-email" : "/reset-password";
-  console.info(
-    `[auth:delivery] ${kind} for ${email}: ${path}?token=${rawToken} (email delivery pending provider setup)`,
-  );
 }
 
 // Re-export for route guards that want the enum of roles without deep imports.
