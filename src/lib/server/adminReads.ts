@@ -300,7 +300,8 @@ export async function adminAuditPage(data: {
     const pageSize = 50;
     const page = Math.max(1, Math.min(1000, Math.floor(Number(data?.page ?? 1)) || 1));
     const action = data?.action === "impersonate_start" || data?.action === "impersonate_stop" ||
-      data?.action === "account_disable" || data?.action === "account_enable" || data?.action === "plan_override"
+      data?.action === "account_disable" || data?.action === "account_enable" || data?.action === "plan_override" ||
+      data?.action === "prompt_version_saved" || data?.action === "prompt_version_reverted"
       ? data.action
       : null;
     const [entries, total] = await Promise.all([

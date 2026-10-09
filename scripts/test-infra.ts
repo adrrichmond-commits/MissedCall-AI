@@ -114,6 +114,35 @@ eq("rateLimit: generous defaults documented in config", {
   twilio: RATE_LIMITS.twilio_webhook.limit,
   stripe: RATE_LIMITS.stripe_webhook.limit,
 }, { login: 60, signup: 30, twilio: 600, stripe: 600 });
+// Audit fix #4: the token endpoints have buckets too — resend-verification is
+// deliberately tighter because it SENDS EMAIL (the cost/spam backstop).
+eq("rateLimit: token endpoint buckets documented in config", {
+  verify: RATE_LIMITS.auth_verify_email.limit,
+  reset: RATE_LIMITS.auth_reset_password.limit,
+  resend: RATE_LIMITS.auth_resend_verification.limit,
+}, { verify: 60, reset: 60, resend: 5 });
+eq("rateLimit: token buckets are per-minute with env overrides wired", [
+  RATE_LIMITS.auth_verify_email.windowSec,
+  RATE_LIMITS.auth_reset_password.windowSec,
+  RATE_LIMITS.auth_resend_verification.windowSec,
+  RATE_LIMITS.auth_verify_email.envVar,
+  RATE_LIMITS.auth_reset_password.envVar,
+  RATE_LIMITS.auth_resend_verification.envVar,
+], [60, 60, 60, "RATE_LIMIT_VERIFY_EMAIL_PER_MIN", "RATE_LIMIT_RESET_PASSWORD_PER_MIN", "RATE_LIMIT_RESEND_VERIFICATION_PER_MIN"]);
+// window behavior on the tightest new bucket (env override → limit 2)
+const origResend = process.env.RATE_LIMIT_RESEND_VERIFICATION_PER_MIN;
+process.env.RATE_LIMIT_RESEND_VERIFICATION_PER_MIN = "2";
+resetRateLimits();
+const rv1 = checkRateLimit("auth_resend_verification", "7.7.7.7");
+const rv2 = checkRateLimit("auth_resend_verification", "7.7.7.7");
+const rv3 = checkRateLimit("auth_resend_verification", "7.7.7.7");
+checkTrue("rateLimit: resend-verification window allows up to the limit", rv1.allowed && rv2.allowed);
+checkTrue("rateLimit: resend-verification blocks past the limit with retryAfterSec", rv3.allowed === false && rv3.retryAfterSec >= 1);
+const rvOther = checkRateLimit("auth_resend_verification", "9.8.7.6");
+checkTrue("rateLimit: resend-verification identity isolated per IP", rvOther.allowed === true);
+resetRateLimits();
+if (origResend === undefined) delete process.env.RATE_LIMIT_RESEND_VERIFICATION_PER_MIN;
+else process.env.RATE_LIMIT_RESEND_VERIFICATION_PER_MIN = origResend;
 // client IP extraction
 eq("rateLimit: x-forwarded-for first hop", clientIpFromHeaders(new Headers({ "x-forwarded-for": "9.9.9.9, 10.0.0.1" })), "9.9.9.9");
 eq("rateLimit: x-real-ip fallback", clientIpFromHeaders(new Headers({ "x-real-ip": "8.8.8.8" })), "8.8.8.8");

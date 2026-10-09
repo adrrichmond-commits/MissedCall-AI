@@ -389,6 +389,9 @@ function Footer() {
             <a href="/privacy" className="text-slate-600 hover:text-slate-900">
               Privacy Policy
             </a>
+            <a href="/sms-consent" className="text-slate-600 hover:text-slate-900">
+              SMS Messaging
+            </a>
             <a href="/login" className="text-slate-600 hover:text-slate-900">
               Log in
             </a>

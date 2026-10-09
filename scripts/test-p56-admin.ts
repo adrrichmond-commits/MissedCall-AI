@@ -412,5 +412,63 @@ try {
   checkEq("cleanup: no orphaned funnel events", leftEvents[0] && (leftEvents[0] as { n: number }).n, 0);
 }
 
+// ---------------------------------------------------------------------------
+// Audit fix #5 (2026-10-09): prompt save/revert join the central audit trail.
+//   - source pins (p4a pattern): migration 025 widens the admin_audit CHECK;
+//     the schema union, both admin fns, the /admin/audit labels, and the
+//     filter whitelist are all in step
+//   - DB: the REAL appendAdminAudit accepts both new actions through the
+//     widened CHECK and still rejects an unknown action (business seeded +
+//     CASCADE-deleted, same contract as the rest of this suite)
+// ---------------------------------------------------------------------------
+{
+  const { readFileSync } = await import("node:fs");
+  const readSrc = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
+  const mig = readSrc("../migrations/025_prompt_audit_actions.sql");
+  checkTrue("promptAudit: migration 025 widens the admin_audit CHECK for both actions", mig.includes("'prompt_version_saved'") && mig.includes("'prompt_version_reverted'") && mig.includes("admin_audit_action_check"));
+  const schema = readSrc("../src/db/schema.ts");
+  checkTrue("promptAudit: AdminAuditAction union extended in step with the CHECK", schema.includes("| 'prompt_version_saved'") && schema.includes("| 'prompt_version_reverted'"));
+  const fns = readSrc("../src/lib/server/adminFns.ts");
+  checkTrue("promptAudit: savePromptVersionFn writes prompt_version_saved with the admin user id", fns.includes('action: "prompt_version_saved"') && fns.includes("adminUserId: ctx.user.id"));
+  checkTrue("promptAudit: revertPromptVersionFn writes prompt_version_reverted", fns.includes('action: "prompt_version_reverted"') && fns.includes("adminUserId: ctx.user.id"));
+  const auditPage = readSrc("../src/routes/admin/audit.tsx");
+  checkTrue("promptAudit: /admin/audit has labels for both new actions", auditPage.includes("prompt_version_saved") && auditPage.includes("prompt_version_reverted"));
+  const reads = readSrc("../src/lib/server/adminReads.ts");
+  checkTrue("promptAudit: audit-page filter whitelist covers both new actions", reads.includes('"prompt_version_saved"') && reads.includes('"prompt_version_reverted"'));
+
+  const { appendAdminAudit } = await import("../src/db/queries/admin");
+  let auditBizId: string | null = null;
+  try {
+    const created = await createBusinessWithOwner({
+      businessName: "P56 PromptAudit " + Date.now(),
+      ownerEmail: "promptaudit-p56@example.com",
+      ownerFullName: "Audit Probe",
+      passwordHash: await hashPassword("probe-password-1234"),
+    });
+    auditBizId = created.business.id;
+    const saved = await appendAdminAudit({
+      adminUserId: created.user.id,
+      action: "prompt_version_saved",
+      detail: { surface: "classify_sms", version: 1 },
+    });
+    checkTrue("promptAudit: widened CHECK accepts prompt_version_saved via the real helper", saved.action === "prompt_version_saved");
+    const reverted = await appendAdminAudit({
+      adminUserId: created.user.id,
+      action: "prompt_version_reverted",
+      detail: { surface: "classify_sms", version: 1 },
+    });
+    checkTrue("promptAudit: widened CHECK accepts prompt_version_reverted via the real helper", reverted.action === "prompt_version_reverted");
+    let rejected = false;
+    try {
+      await query(`INSERT INTO admin_audit (admin_user_id, action) VALUES ($1, 'definitely_not_an_action')`, [created.user.id]);
+    } catch {
+      rejected = true;
+    }
+    checkTrue("promptAudit: CHECK still rejects unknown actions", rejected === true);
+  } finally {
+    if (auditBizId) await query(`DELETE FROM businesses WHERE id=$1`, [auditBizId]);
+  }
+}
+
 console.log(`\np56-admin: ${checks - failures}/${checks} checks passed`);
 if (failures > 0) process.exit(1);

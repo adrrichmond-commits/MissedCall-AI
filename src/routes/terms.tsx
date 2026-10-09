@@ -45,6 +45,10 @@ const SECTIONS: Array<{ title: string; body: ReactNode }> = [
         <li>
           <span className="font-medium text-slate-700">Free trial:</span> new
           accounts include a 14-day free trial. Trial terms are shown at signup.
+          When the trial ends, an account with a payment method on file converts
+          to its selected plan and renews monthly as described under Billing
+          below; an account with no payment method on file becomes read-only
+          until you add one — nothing is charged and no plan is activated.
         </li>
         <li>
           <span className="font-medium text-slate-700">Plans:</span> Starter at

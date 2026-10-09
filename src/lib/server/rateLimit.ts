@@ -44,6 +44,14 @@ export const RATE_LIMITS = {
   auth_login: { limit: 60, windowSec: 60, envVar: "RATE_LIMIT_LOGIN_PER_MIN", description: "loginFn attempts per client IP" },
   auth_signup: { limit: 30, windowSec: 60, envVar: "RATE_LIMIT_SIGNUP_PER_MIN", description: "signupFn attempts per client IP" },
   auth_password_reset: { limit: 20, windowSec: 60, envVar: "RATE_LIMIT_PWRESET_PER_MIN", description: "forgotPasswordFn attempts per client IP" },
+  // Audit fix #4 (2026-10-09): the token endpoints get buckets too. Token
+  // attempts are generous (a human pastes one link; token brute force is
+  // impractical online but unthrottled noise should still be blunted);
+  // resend-verification is much tighter because it SENDS EMAIL — it is the
+  // email-sending cost/spam backstop, not just a request limiter.
+  auth_verify_email: { limit: 60, windowSec: 60, envVar: "RATE_LIMIT_VERIFY_EMAIL_PER_MIN", description: "verifyEmailFn token attempts per client IP" },
+  auth_reset_password: { limit: 60, windowSec: 60, envVar: "RATE_LIMIT_RESET_PASSWORD_PER_MIN", description: "resetPasswordFn token attempts per client IP" },
+  auth_resend_verification: { limit: 5, windowSec: 60, envVar: "RATE_LIMIT_RESEND_VERIFICATION_PER_MIN", description: "resendVerificationFn email sends per client IP" },
   twilio_webhook: { limit: 600, windowSec: 60, envVar: "RATE_LIMIT_TWILIO_PER_MIN", description: "Twilio inbound webhook posts per source IP" },
   stripe_webhook: { limit: 600, windowSec: 60, envVar: "RATE_LIMIT_STRIPE_PER_MIN", description: "Stripe webhook posts per source IP" },
   // Cron sweeps are one caller (the external scheduler) pinging periodically;
